@@ -1,0 +1,5 @@
+** Second try at writing full fledged debugger**
+
+- This is a debugger that works with Windows 32bit PE files.
+- Written in C using plain old Win32 APIs
+- It is being developed as a debugger with its own GUI
