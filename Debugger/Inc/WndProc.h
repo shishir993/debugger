@@ -4,6 +4,8 @@
 
 #include "Common.h"
 #include "UICommon.h"
+#include "Logger.h"
+#include "UICreator.h"
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 

@@ -2,12 +2,15 @@
 #include "Inc\Common.h"
 #include "Inc\WndProc.h"
 #include "Inc\UICommon.h"
+#include "Inc\Logger.h"
 
-HWND g_hMainWnd;
 HINSTANCE g_hMainInstance;
+
+LOGGER g_stLogger;
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR szCmdLine, int iCmdShow)
 {
+    HWND g_hMainWnd;
     MSG MainWndMsg;
 	WNDCLASS MainWndClass;
 
@@ -18,6 +21,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR szCmdLine,
 
     DBG_UNREFERENCED_PARAMETER(szCmdLine);
     DBG_UNREFERENCED_PARAMETER(hPrevInstance);
+
+    // First, initialize logger
+    if(!fInitializeLogger(L"OSD_Log.txt", &g_stLogger))
+    {
+        MessageBox(NULL, L"Cannot initialize logger", L"Error", MB_ICONEXCLAMATION);
+        return CE_WMAIN_ERROR;
+    }
 
 	g_hMainInstance = hInstance;
 

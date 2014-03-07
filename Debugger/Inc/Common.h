@@ -5,6 +5,7 @@
 #include <Windows.h>
 #include <stdio.h>
 
+#include "Assert.h"
 #include "CustomErrors.h"
 #include "StringLengths.h"
 #include "Logger.h"

@@ -81,16 +81,22 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Assert.cpp" />
+    <ClCompile Include="DebuggerDP.cpp" />
+    <ClCompile Include="Logger.cpp" />
+    <ClCompile Include="UICreator.cpp" />
     <ClCompile Include="WinMain.cpp" />
     <ClCompile Include="WndProc.cpp" />
+    <ClInclude Include="Inc\Assert.h" />
+    <ClInclude Include="Inc\SourceHelpers.h" />
     <ClInclude Include="Inc\Common.h" />
     <ClInclude Include="Inc\CustomErrors.h" />
+    <ClInclude Include="Inc\DebuggerDP.h" />
     <ClInclude Include="Inc\Logger.h" />
     <ClInclude Include="Inc\StringLengths.h" />
     <ClInclude Include="Inc\UICommon.h" />
+    <ClInclude Include="Inc\UICreator.h" />
     <ClInclude Include="Inc\WndProc.h" />
-    <ClInclude Include="resource.h" />
-    <ClInclude Include="resource1.h" />
     <ClInclude Include="Res\resource.h" />
   </ItemGroup>
   <ItemGroup>
