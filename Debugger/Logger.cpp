@@ -1,10 +1,14 @@
 
 #include "Inc\Logger.h"
 
+#define MAX_LOGLINE     (SLEN_LOGLINE + 16)     // accounting for the extra time info length
+
+static void vWriteLog(LOGGER *pLogger, const WCHAR* pszMessage, int nLen);
+
 BOOL fInitializeLogger(WCHAR *pszLogFilepath, __out LOGGER *pLogger)
 {
     HANDLE hMutex = NULL;
-    WCHAR szMutexNameTemp[SLEN_COMMON];
+    WCHAR szMutexNameTemp[SLEN_COMMON64];
 
     HANDLE hFile = NULL;
 
@@ -76,22 +80,39 @@ void vTerminateLogger(LOGGER *pLogger)
     return;
 }
 
-void vWriteLog(LOGGER *pLogger, const WCHAR* pszMessage)
+void vWriteLog(LOGGER *pLogger, const WCHAR* pszMessageFmt, ...)
 {
-    ASSERT(pszMessage);
+    ASSERT(pszMessageFmt);
 
-    vWriteLog(pLogger, pszMessage, wcslen(pszMessage));
+    va_list pArgs;
+    WCHAR szLogMessage[SLEN_LOGLINE];
+
+    HRESULT hrReturn = S_OK;
+    
+    va_start(pArgs, pszMessageFmt);
+    hrReturn = StringCchVPrintf(szLogMessage, _countof(szLogMessage), pszMessageFmt, pArgs);
+    va_end(pArgs);
+
+    if(FAILED(hrReturn))
+    {
+        // todo:
+        return;
+    }
+
+    vWriteLog(pLogger, szLogMessage, wcslen(szLogMessage));
     return;
 }
 
-void vWriteLog(LOGGER *pLogger, const WCHAR* pszMessage, int nLen)
+// Internal function that actually does the writing to log file part
+//
+static void vWriteLog(LOGGER *pLogger, const WCHAR* pszMessage, int nLen)
 {
     ASSERT(pLogger);
     ASSERT(pszMessage);
     ASSERT(nLen > 1);
 
     SYSTEMTIME stCurrentTime;
-    WCHAR szLogMessage[SLEN_LOGLINE];
+    WCHAR szLogMessage[MAX_LOGLINE];
 
     DWORD dwLogChars;
     DWORD dwWritten;
@@ -99,7 +120,7 @@ void vWriteLog(LOGGER *pLogger, const WCHAR* pszMessage, int nLen)
     GetLocalTime(&stCurrentTime);
 	
 	// Construct the string to be displayed
-	swprintf_s(szLogMessage, SLEN_LOGLINE, L"[%02d:%02d:%02d.%03d] %s\r\n", stCurrentTime.wHour, 
+	swprintf_s(szLogMessage, MAX_LOGLINE, L"[%02d:%02d:%02d.%03d] %s\r\n", stCurrentTime.wHour, 
 		        stCurrentTime.wMinute, stCurrentTime.wSecond, stCurrentTime.wMilliseconds, pszMessage);
 
     ASSERT(pLogger->hLogFile);

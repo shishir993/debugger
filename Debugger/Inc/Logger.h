@@ -4,6 +4,7 @@
 
 #include <Windows.h>
 #include <stdio.h>
+#include <strsafe.h>
 #include <time.h>
 
 #include "Assert.h"
@@ -14,12 +15,11 @@ typedef struct _Logger
 {
     HANDLE hMutex;
     HANDLE hLogFile;
-    WCHAR szMutexName[SLEN_COMMON];
-}LOGGER;
+    WCHAR szMutexName[SLEN_COMMON64];
+}LOGGER, *PLOGGER;
 
 BOOL fInitializeLogger(WCHAR *pszLogFilepath, __out LOGGER *pLogger);
 void vTerminateLogger(LOGGER *pLogger);
-void vWriteLog(LOGGER *pLogger, const WCHAR* pszMessage);
-void vWriteLog(LOGGER *pLogger, const WCHAR* pszMessage, int nLen);
+void vWriteLog(LOGGER *pLogger, const WCHAR* pszMessageFmt, ...);
 
 #endif // _LOGGER_H
