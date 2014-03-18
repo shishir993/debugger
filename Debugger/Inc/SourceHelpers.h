@@ -8,7 +8,12 @@
 #define ISNULL_GOTO(PtrHandle, gotoLocation)    if(ISNULL(PtrHandle)) { goto gotoLocation; }
 #define ISVALID_HANDLE(handle)                  (handle != NULL && handle != INVALID_HANDLE_VALUE)
 
+#define IFPTR_FREE(ptr)                         if(!ISNULL(ptr)) { vChlMmFree((void**)&ptr); ptr = NULL; }
+#define FREE_HANDLE(handle)                     if(ISVALID_HANDLE(handle)) { CloseHandle(handle); } handle = NULL
+
 #define SET_ERRORCODE(dwErrCode)                { dwErrCode = GetLastError(); }
 #define SET_ERRORCODE_PTR(pdwErrCode)           { if(!ISNULL(pdwErrCode)) { *pdwErrCode = GetLastError(); } }
+
+#define CONV_WCHARSIZE(bytes)                   (bytes * sizeof(WCHAR))
 
 #endif // _CODECHECKERS_H

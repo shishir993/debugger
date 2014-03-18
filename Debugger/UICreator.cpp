@@ -48,19 +48,23 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
     RECT rcTabWindow;
     RECT rcTabDisplay;
 
-    HWND hDisass, hListCStack, hListRegisters, hListThreads, hTabBottom, hEditCommand, hStaticCommand;
+    int iNewIndex = -1;
+    HWND hEditDisass, hListCStack, hListRegisters, hListThreads, hTabBottom, hEditCommand, hStaticCommand;
 
     // Init all handles to NULL
-    hDisass = hListCStack = hListRegisters = hListThreads = hTabBottom = hEditCommand = hStaticCommand = NULL;
+    hEditDisass = hListCStack = hListRegisters = hListThreads = hTabBottom = hEditCommand = hStaticCommand = NULL;
 
     // Insert a new tab item
-    if(!fInsertTabItem(hTab, L"Test", NULL, NULL))
+    if(!fInsertTabItem(hTab, L"Test", &iNewIndex, NULL))
     {
+        // todo: log
         goto error_return;
     }
+    ASSERT(iNewIndex > -1);
 
     if(!GetWindowRect(hTab, &rcTabWindow))
     {
+        // todo: log
         goto error_return;
     }
 
@@ -94,7 +98,7 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
     HINSTANCE hInstance = GetModuleHandle(NULL);
 
     // Create the disass window
-    hDisass = CreateWindow( 
+    hEditDisass = CreateWindow( 
                             WC_EDIT, 
                             NULL, 
                             WS_CHILD | WS_BORDER | WS_VISIBLE | ES_LEFT | ES_MULTILINE | ES_READONLY,
@@ -107,7 +111,7 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                             hInstance,
                             NULL);
 
-    ISNULL_GOTO(hDisass, error_return);
+    ISNULL_GOTO(hEditDisass, error_return);
 
     // Three list views
     hListCStack = CreateWindow(
@@ -205,6 +209,15 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                                 hInstance,
                                 NULL);
     ISNULL_GOTO(hTabBottom, error_return);
+
+    pstTabPageInfo->hEditDisass = hEditDisass;
+    pstTabPageInfo->hListCallStack = hListCStack;
+    pstTabPageInfo->hListRegisters = hListRegisters;
+    pstTabPageInfo->hListThreads = hListThreads;
+    pstTabPageInfo->hEditCommand = hEditCommand;
+    pstTabPageInfo->hStaticCommand = hStaticCommand;
+    pstTabPageInfo->hTabBottom = hTabBottom;
+    pstTabPageInfo->iTabIndex = iNewIndex;
 
     return TRUE;
 

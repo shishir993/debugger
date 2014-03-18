@@ -6,7 +6,8 @@
 
 HINSTANCE g_hMainInstance;
 
-LOGGER g_stLogger;
+LOGGER StLogger;
+PLOGGER pstLogger = &StLogger;
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR szCmdLine, int iCmdShow)
 {
@@ -14,7 +15,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR szCmdLine,
     MSG MainWndMsg;
 	WNDCLASS MainWndClass;
 
-	WCHAR szAppName[SLEN_COMMON];
+	WCHAR szAppName[SLEN_COMMON64];
 
     int iScreenX, iScreenY, iWndX, iWndY, iWidth, iHeight;
 	RECT rcMainWnd;
@@ -23,7 +24,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR szCmdLine,
     DBG_UNREFERENCED_PARAMETER(hPrevInstance);
 
     // First, initialize logger
-    if(!fInitializeLogger(L"OSD_Log.txt", &g_stLogger))
+    if(!fInitializeLogger(L"OSD_Log.txt", &StLogger))
     {
         MessageBox(NULL, L"Cannot initialize logger", L"Error", MB_ICONEXCLAMATION);
         return CE_WMAIN_ERROR;
