@@ -7,6 +7,8 @@ CHL_HTABLE *pTabThreadMap = NULL;
 
 BOOL fGuiInitialize(__out DWORD *pdwErrCode)
 {
+    DBG_UNREFERENCED_PARAMETER(pdwErrCode);
+
     if(pTabThreadMap)
     {
         fChlDsDestroyHT(pTabThreadMap);
@@ -29,6 +31,8 @@ BOOL fGuiAddTab(int tabIndex, DWORD threadId, __out DWORD *pdwErrCode)
 {
     ASSERT(pTabThreadMap);
     ASSERT(tabIndex >= 0);
+
+    DBG_UNREFERENCED_PARAMETER(pdwErrCode);
     
 #ifdef _DEBUG
     WCHAR szDbgMessage[SLEN_LOGLINE];
@@ -44,6 +48,8 @@ BOOL fGuiRemTab(int tabIndex, __out DWORD *pdwErrCode)
     ASSERT(pTabThreadMap);
     ASSERT(tabIndex >= 0);
 
+    DBG_UNREFERENCED_PARAMETER(pdwErrCode);
+
 #ifdef _DEBUG
     WCHAR szDbgMessage[SLEN_LOGLINE];
     swprintf_s(szDbgMessage, _countof(szDbgMessage), L"fGuiRemTab(): %d", tabIndex);
@@ -58,6 +64,8 @@ BOOL fGuiFindTab(int tabIndex, __out DWORD *pdwThreadId, __out DWORD *pdwErrCode
     ASSERT(pTabThreadMap);
     ASSERT(tabIndex >= 0);
     ASSERT(pdwThreadId);
+
+    DBG_UNREFERENCED_PARAMETER(pdwErrCode);
 
     DWORD dwThreadId;
     int iValSize;
@@ -79,6 +87,8 @@ BOOL fGuiGetOpenFilename(HWND hMainWindow, WCHAR *pszFilters, __out WCHAR **ppsz
 {
     ASSERT(ISVALID_HANDLE(hMainWindow));
     ASSERT(pszFilters);
+
+    DBG_UNREFERENCED_PARAMETER(pdwErrCode);
 
     OPENFILENAME ofn;
     DWORD dwFlags = 0;

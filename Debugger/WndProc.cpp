@@ -108,6 +108,8 @@ static BOOL fOnDebugProgram(HWND hMainWindow, __out DWORD *pdwErrCode)
 
     HANDLE hThreadDebug = NULL;
     DWORD dwThreadId = 0;
+    
+    DWORD dwWaitResult = WAIT_FAILED;
 
     if(!fChlMmAlloc((void**)&pDebugInfo, sizeof(DEBUGINFO), &dwErrorCode))
     {
@@ -168,8 +170,10 @@ static BOOL fOnDebugProgram(HWND hMainWindow, __out DWORD *pdwErrCode)
         goto error_return;
     }
 
-    if( WaitForSingleObject(hEventInitSync, 5000) != WAIT_OBJECT_0 )
+    dwWaitResult = WaitForSingleObject(hEventInitSync, 5000);
+    if( dwWaitResult != WAIT_OBJECT_0 )
     {
+        SET_ERRORCODE(dwErrorCode);
         ASSERT(FALSE);
         vWriteLog(pstLogger, L"%s(): Debug thread(id: %u) failed to signal init sync event", __FUNCTIONW__, dwThreadId);
         goto error_return;
@@ -191,8 +195,7 @@ static BOOL fCreateConsoleWindow()
     {
         if(!AllocConsole())
         {
-            DWORD lasterror  = GetLastError();
-            MessageBox(NULL, L"Could not allocate new console", L"Error", MB_OK);
+            logerror(pstLogger, L"Could not allocate new console: %d", GetLastError());
         }
         else
         {

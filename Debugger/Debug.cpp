@@ -7,14 +7,16 @@ extern HINSTANCE g_hMainInstance;
 typedef struct _TargetInfo {
     PDEBUGINFO pstDebugInfoFromGui;
     DWORD dwPID;
-    CHL_HTABLE phtDllsLoaded;
-    CHL_HTABLE phtThreads;
+    DWORD dwMainThreadID;
+    CHL_HTABLE *phtDllsLoaded;
+    CHL_HTABLE *phtThreads;
 }TARGETINFO, *PTARGETINFO;
 
 static BOOL fDebugNewProgram(PTARGETINFO pstTargetInfo);
 static BOOL fDebugActiveProcess(PTARGETINFO pstTargetInfo);
 static void vOnThisThreadExit(PTARGETINFO *ppstTargetInfo);
-// static BOOL fDebugEventLoop();
+static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo, __out DWORD *pdwErrCode);
+static BOOL fProcessDebugEventLoop(PTARGETINFO pstTargetInfo, __out DWORD *pdwErrCode);
 
 DWORD WINAPI dwDebugThreadEntry(LPVOID lpvArgs)
 {
@@ -25,6 +27,8 @@ DWORD WINAPI dwDebugThreadEntry(LPVOID lpvArgs)
     PTARGETINFO pstTargetInfo = NULL;
 
     HANDLE hInitSyncEvent = NULL;
+    BOOL fProcessingGuiMessages;
+    BOOL fProcessingDebugEventLoop;
 
     vWriteLog(pstLogger, L"%s(): Entry", __FUNCTIONW__);
 
@@ -41,27 +45,53 @@ DWORD WINAPI dwDebugThreadEntry(LPVOID lpvArgs)
     // New program OR active process? - work on it
     if(pstTargetInfo->pstDebugInfoFromGui->fDebuggingActiveProcess)
     {
-        fDebugActiveProcess(pstTargetInfo);
+        if(!fDebugActiveProcess(pstTargetInfo))
+        {
+            // todo:
+        }
     }
     else
     {
-        fDebugNewProgram(pstTargetInfo);
+        if(!fDebugNewProgram(pstTargetInfo))
+        {
+            // todo:
+        }
     }
 
     // Signal init sync event to Gui thread
     ASSERT(pstTargetInfo->pstDebugInfoFromGui->pszInitSyncEvtName);
-    if( (hInitSyncEvent = OpenEvent(SYNCHRONIZE, FALSE, pstTargetInfo->pstDebugInfoFromGui->pszInitSyncEvtName)) == NULL )
+    if( (hInitSyncEvent = OpenEvent(EVENT_MODIFY_STATE, FALSE, pstTargetInfo->pstDebugInfoFromGui->pszInitSyncEvtName)) == NULL )
     {
         SET_ERRORCODE(dwErrCode);
         vWriteLog(pstLogger, L"%s(): OpenEvent() failed %u", __FUNCTIONW__, dwErrCode);
         goto error_return;
     }
-    SetEvent(hInitSyncEvent);
+
+    if(!SetEvent(hInitSyncEvent))
+    {
+        SET_ERRORCODE(dwErrCode);
+        ASSERT(FALSE);
+        // todo: handle
+    }
     FREE_HANDLE(hInitSyncEvent);
     pstTargetInfo->pstDebugInfoFromGui->pszInitSyncEvtName = NULL;
 
     // Start from-gui message loop and debug event loop
-    // 
+    fProcessingGuiMessages = fProcessingDebugEventLoop = TRUE;
+
+    // Execute loop while we have either GUI messages or debug event loop to process
+    while(fProcessingGuiMessages || fProcessingDebugEventLoop)
+    {
+        if(fProcessingGuiMessages && !fProcessGuiMessage(pstTargetInfo, &dwErrCode))
+        {
+            fProcessingGuiMessages = FALSE;
+        }
+
+        if(fProcessingDebugEventLoop && !fProcessDebugEventLoop(pstTargetInfo, &dwErrCode))
+        {
+            fProcessingDebugEventLoop = FALSE;
+        }
+    }
 
     vWriteLog(pstLogger, L"%s(): Exiting with ERROR_SUCCESS", __FUNCTIONW__);
     vOnThisThreadExit(&pstTargetInfo);
@@ -75,7 +105,49 @@ DWORD WINAPI dwDebugThreadEntry(LPVOID lpvArgs)
 
 static BOOL fDebugNewProgram(PTARGETINFO pstTargetInfo)
 {
+    ASSERT(pstTargetInfo);
+    ASSERT(pstTargetInfo->pstDebugInfoFromGui->pszTargetPath);
+
+    STARTUPINFO StartUpInfo;
+    PROCESS_INFORMATION ProcInfo;
+
+    ZeroMemory(&StartUpInfo, sizeof(StartUpInfo));
+    StartUpInfo.cb = sizeof(StartUpInfo);
+
+    // Create the process first
+    if(!CreateProcess(  pstTargetInfo->pstDebugInfoFromGui->pszTargetPath,    // app name
+                        NULL,               // command line
+                        NULL,               // process attr
+                        NULL,               // thread attr
+                        FALSE,              // inherit handles
+                        DEBUG_ONLY_THIS_PROCESS|
+                        CREATE_NEW_CONSOLE,    // creation flags
+                        NULL,               // environment
+                        NULL,               // cur directory
+                        &StartUpInfo,
+                        &ProcInfo))
+    {
+        logerror(pstLogger, L"Unable to create debuggee process: %d", GetLastError());
+        goto error_return;
+    }
+
+    // Close these handles because we will get them in debug event loop
+    FREE_HANDLE(ProcInfo.hProcess);
+    FREE_HANDLE(ProcInfo.hThread);
+
     // Set up required data structures before starting debugging loop
+    pstTargetInfo->dwPID = ProcInfo.dwProcessId;
+    pstTargetInfo->dwMainThreadID = ProcInfo.dwThreadId;
+
+    // Create the hashtable for thread info
+    if(!fChlDsCreateHT(&(pstTargetInfo->phtThreads), iChlDsGetNearestTableSizeIndex(100), HT_KEY_DWORD, HT_VAL_STR))
+    {
+        logerror(pstLogger, L"fChlDsCreateHT() returned FALSE");
+        goto error_return;
+    }
+    return TRUE;
+
+    error_return:
     return FALSE;
 }
 
@@ -101,7 +173,7 @@ static void vOnThisThreadExit(PTARGETINFO *ppstTargetInfo)
     if(!plocal->pstDebugInfoFromGui->fDebuggingActiveProcess)
     {
         ASSERT(plocal->pstDebugInfoFromGui->pszTargetPath);
-        vChlMmFree((void**)&plocal->pstDebugInfoFromGui->pszInitSyncEvtName);
+        vChlMmFree((void**)&plocal->pstDebugInfoFromGui->pszTargetPath);
     }
     else
     {
@@ -111,4 +183,22 @@ static void vOnThisThreadExit(PTARGETINFO *ppstTargetInfo)
     vChlMmFree((void**)&plocal);
     *ppstTargetInfo = NULL;
     return;
+}
+
+static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo, __out DWORD *pdwErrCode)
+{
+    ASSERT(pstTargetInfo);
+
+    error_return:
+    if(pdwErrCode) { *pdwErrCode = ERROR_CALL_NOT_IMPLEMENTED; }
+    return FALSE;
+}
+
+static BOOL fProcessDebugEventLoop(PTARGETINFO pstTargetInfo, __out DWORD *pdwErrCode)
+{
+    ASSERT(pstTargetInfo);
+
+    error_return:
+    if(pdwErrCode) { *pdwErrCode = ERROR_CALL_NOT_IMPLEMENTED; }
+    return FALSE;
 }
