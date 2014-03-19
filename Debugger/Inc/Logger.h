@@ -15,9 +15,9 @@
 #define LOGTYPE_WARN    1
 #define LOGTYPE_ERROR   2
 
-#define logtrace(x)     vWriteLogType(LOGTYPE_TRACE, x)
-#define logwarn(x)      vWriteLogType(LOGTYPE_WARN, x)
-#define logerror(x)     vWriteLogType(LOGTYPE_ERROR, x)
+#define logtrace(plogger, fmt, ...)     vWriteLogType(LOGTYPE_TRACE, plogger, fmt, __VA_ARGS__)
+#define logwarn(plogger, fmt, ...)      vWriteLogType(LOGTYPE_WARN, plogger, fmt, __VA_ARGS__)
+#define logerror(plogger, fmt, ...)     vWriteLogType(LOGTYPE_ERROR, plogger, fmt, __VA_ARGS__)
 
 typedef struct _Logger
 {
