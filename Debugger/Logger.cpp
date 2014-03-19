@@ -1,9 +1,9 @@
 
 #include "Inc\Logger.h"
 
-#define MAX_LOGLINE     (SLEN_LOGLINE + 16)     // accounting for the extra time info length
+#define MAX_LOGLINE     (SLEN_LOGLINE + 24)     // accounting for the extra time info length and logtype
 
-static void vWriteLog(LOGGER *pLogger, const WCHAR* pszMessage, int nLen);
+static void vWriteLogInternal(int iLogType, LOGGER *pLogger, const WCHAR* pszMessage, int nLen);
 
 BOOL fInitializeLogger(WCHAR *pszLogFilepath, __out LOGGER *pLogger)
 {
@@ -80,6 +80,8 @@ void vTerminateLogger(LOGGER *pLogger)
     return;
 }
 
+// Writes a line of log to the logger. Uses LOGTYPE_TRACE to log the line.
+// 
 void vWriteLog(LOGGER *pLogger, const WCHAR* pszMessageFmt, ...)
 {
     ASSERT(pszMessageFmt);
@@ -99,13 +101,41 @@ void vWriteLog(LOGGER *pLogger, const WCHAR* pszMessageFmt, ...)
         return;
     }
 
-    vWriteLog(pLogger, szLogMessage, wcslen(szLogMessage));
+    vWriteLogInternal(LOGTYPE_TRACE, pLogger, szLogMessage, wcslen(szLogMessage));
     return;
+}
+
+// Function that allows one to specify the log type to be written.
+// TRACE, WARN or ERROR types. The corresponding string will be appended to the 
+// beginning of the log line.
+// ** Added a new function instead of changing the vWriteLog() to prevent breaking
+// ** existing callers.
+void vWriteLogType(int iLogLevel, PLOGGER pLogger, const WCHAR *pszMessageFmt, ...)
+{
+    ASSERT(pszMessageFmt);
+    ASSERT(iLogLevel >= LOGTYPE_TRACE && iLogLevel <= LOGTYPE_ERROR);
+
+    va_list pArgs;
+    WCHAR szLogMessage[SLEN_LOGLINE];
+
+    HRESULT hrReturn = S_OK;
+    
+    va_start(pArgs, pszMessageFmt);
+    hrReturn = StringCchVPrintf(szLogMessage, _countof(szLogMessage), pszMessageFmt, pArgs);
+    va_end(pArgs);
+
+    if(FAILED(hrReturn))
+    {
+        // todo:
+        return;
+    }
+
+    vWriteLogInternal(LOGTYPE_TRACE, pLogger, szLogMessage, wcslen(szLogMessage));
 }
 
 // Internal function that actually does the writing to log file part
 //
-static void vWriteLog(LOGGER *pLogger, const WCHAR* pszMessage, int nLen)
+static void vWriteLogInternal(int iLogLevel, LOGGER *pLogger, const WCHAR* pszMessage, int nLen)
 {
     ASSERT(pLogger);
     ASSERT(pszMessage);
@@ -118,11 +148,38 @@ static void vWriteLog(LOGGER *pLogger, const WCHAR* pszMessage, int nLen)
     DWORD dwWritten;
 
     GetLocalTime(&stCurrentTime);
+
+    // todo: read only nLen chars from pszMessage
 	
 	// Construct the string to be displayed
-	swprintf_s(szLogMessage, MAX_LOGLINE, L"[%02d:%02d:%02d.%03d] %s\r\n", stCurrentTime.wHour, 
+    switch(iLogLevel)
+    {
+        case LOGTYPE_TRACE:
+        {
+            swprintf_s(szLogMessage, MAX_LOGLINE, L"[%02d:%02d:%02d.%03d] TRACE: %s\r\n", stCurrentTime.wHour, 
 		        stCurrentTime.wMinute, stCurrentTime.wSecond, stCurrentTime.wMilliseconds, pszMessage);
+            break;
+        }
 
+        case LOGTYPE_WARN:
+        {
+            swprintf_s(szLogMessage, MAX_LOGLINE, L"[%02d:%02d:%02d.%03d] WARN : %s\r\n", stCurrentTime.wHour, 
+		        stCurrentTime.wMinute, stCurrentTime.wSecond, stCurrentTime.wMilliseconds, pszMessage);
+            break;
+        }
+
+        case LOGTYPE_ERROR:
+        {
+            swprintf_s(szLogMessage, MAX_LOGLINE, L"[%02d:%02d:%02d.%03d] ERROR: %s\r\n", stCurrentTime.wHour, 
+		        stCurrentTime.wMinute, stCurrentTime.wSecond, stCurrentTime.wMilliseconds, pszMessage);
+            break;
+        }
+
+        default:
+            ASSERT(FALSE);
+            break;
+    }
+	
     ASSERT(pLogger->hLogFile);
     ASSERT(pLogger->hMutex);
 
