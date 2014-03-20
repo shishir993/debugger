@@ -174,7 +174,7 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                                     NULL);
 
     ISNULL_GOTO(hStaticCommand, error_return);
-    BOOL ret = SendMessage(hStaticCommand, WM_SETTEXT, 0, (LPARAM)L"Command: ");
+    SendMessage(hStaticCommand, WM_SETTEXT, 0, (LPARAM)L"Command: ");
 
     RECT rcStatic;
     GetWindowRect(hStaticCommand, &rcStatic);

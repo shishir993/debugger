@@ -45,6 +45,9 @@
     <ClCompile Include="UICreator.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="DebugHelpers.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Inc\Logger.h">
@@ -90,6 +93,9 @@
       <Filter>Libs</Filter>
     </ClInclude>
     <ClInclude Include="Inc\Debug.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Inc\DebugHelpers.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

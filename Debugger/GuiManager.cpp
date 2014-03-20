@@ -91,8 +91,6 @@ BOOL fGuiGetOpenFilename(HWND hMainWindow, WCHAR *pszFilters, __out WCHAR **ppsz
     DBG_UNREFERENCED_PARAMETER(pdwErrCode);
 
     OPENFILENAME ofn;
-    DWORD dwFlags = 0;
-    HANDLE hFile = NULL;
 
     DWORD dwErrorCode = ERROR_SUCCESS;
     WCHAR szLogMessage[SLEN_LOGLINE];

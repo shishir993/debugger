@@ -19,6 +19,12 @@
 #define logwarn(plogger, fmt, ...)      vWriteLogType(LOGTYPE_WARN, plogger, fmt, __VA_ARGS__)
 #define logerror(plogger, fmt, ...)     vWriteLogType(LOGTYPE_ERROR, plogger, fmt, __VA_ARGS__)
 
+#ifdef _DEBUG
+    #define dbgwprintf(fmt, ...)        wprintf(fmt, __VA_ARGS__)
+#else
+    #define dbgwprintf(fmt, ...)
+#endif
+
 typedef struct _Logger
 {
     HANDLE hMutex;

@@ -4,10 +4,12 @@
 
 #define SLEN_COMMON32       32
 #define SLEN_COMMON64       64
+#define SLEN_COMMON128      128
 #define SLEN_INT16          6
 #define SLEN_LOGLINE        1024
 #define SLEN_MAXPATH        1024
 
 #define SLEN_EVENTNAMES     SLEN_COMMON32
+#define SLEN_EXCEPTION_NAME SLEN_COMMON128
 
 #endif // _STRINGLENGTHS_H

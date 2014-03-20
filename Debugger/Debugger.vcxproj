@@ -93,6 +93,7 @@
     <ClCompile Include="Assert.cpp" />
     <ClCompile Include="Debug.cpp" />
     <ClCompile Include="DebuggerDP.cpp" />
+    <ClCompile Include="DebugHelpers.cpp" />
     <ClCompile Include="GuiManager.cpp" />
     <ClCompile Include="Logger.cpp" />
     <ClCompile Include="MenuItems.cpp" />
@@ -101,6 +102,7 @@
     <ClCompile Include="WndProc.cpp" />
     <ClInclude Include="Inc\Assert.h" />
     <ClInclude Include="Inc\Debug.h" />
+    <ClInclude Include="Inc\DebugHelpers.h" />
     <ClInclude Include="Inc\GuiManager.h" />
     <ClInclude Include="Inc\MenuItems.h" />
     <ClInclude Include="Inc\SourceHelpers.h" />

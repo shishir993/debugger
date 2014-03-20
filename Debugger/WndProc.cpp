@@ -22,9 +22,6 @@ static BOOL fCreateConsoleWindow();
 LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM lParam)
 {
     DWORD dwError = ERROR_SUCCESS;
-    WCHAR szLogMessage[SLEN_LOGLINE];
-
-    PDEBUGINFO pDebugInfo = NULL;
 
     switch(message)
 	{
@@ -183,7 +180,7 @@ static BOOL fOnDebugProgram(HWND hMainWindow, __out DWORD *pdwErrCode)
 
     error_return:
     IFPTR_FREE(pDebugInfo);
-    if(pdwErrCode) { *pdwErrCode = dwErrorCode; }
+    IFPTR_SETVAL(pdwErrCode, dwErrorCode);
     return FALSE;
 }
 
