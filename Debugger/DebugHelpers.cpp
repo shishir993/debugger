@@ -51,7 +51,7 @@ BOOL fGetExceptionName(DWORD excode, __out WCHAR *pwsBuffer, int bufSize)
 
         default:
         {
-            dbgwprintf(L"0x%08x: Unknown Exception", excode);
+            swprintf_s(pwsBuffer, bufSize, L"Unknown Exception");
             return FALSE;
         }
     }

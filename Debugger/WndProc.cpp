@@ -116,17 +116,15 @@ static BOOL fOnDebugProgram(HWND hMainWindow, __out DWORD *pdwErrCode)
     }
 
     // Get the path to the target program to be debugged
-    if(!fGuiGetOpenFilename(hMainWindow, szFilters, &pDebugInfo->pszTargetPath, &dwErrorCode))
+    if(!fGuiGetOpenFilename(hMainWindow, szFilters, pDebugInfo->szTargetPath, sizeof(pDebugInfo->szTargetPath), &dwErrorCode))
     {
         swprintf_s(szLogMessage, _countof(szLogMessage), L"%s(): fGuiGetOpenFilename failed: %u", __FUNCTIONW__, dwErrorCode);
         vWriteLog(pstLogger, szLogMessage);
         goto error_return;
     }
 
-    ASSERT(pDebugInfo->pszTargetPath);
-
     // Check if the image file exists and can be read
-    hFile = CreateFile(pDebugInfo->pszTargetPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    hFile = CreateFile(pDebugInfo->szTargetPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if(hFile == INVALID_HANDLE_VALUE)
     {
         MessageBox(hMainWindow, L"Chosen target path not found or access denied. See log file.", L"Error", MB_ICONEXCLAMATION);
@@ -159,7 +157,7 @@ static BOOL fOnDebugProgram(HWND hMainWindow, __out DWORD *pdwErrCode)
     // Create the debug thread, pass in the required info
     pDebugInfo->hMainWindow = hMainWindow;
     pDebugInfo->fDebuggingActiveProcess = FALSE;
-    pDebugInfo->pszInitSyncEvtName = szEventNameSync;
+    wcscpy_s(pDebugInfo->szInitSyncEvtName, _countof(pDebugInfo->szInitSyncEvtName), szEventNameSync);
     if( (hThreadDebug = CreateThread(NULL, 0, dwDebugThreadEntry, (LPVOID)pDebugInfo, 0, &dwThreadId)) == NULL )
     {
         SET_ERRORCODE(dwErrorCode);
@@ -171,9 +169,9 @@ static BOOL fOnDebugProgram(HWND hMainWindow, __out DWORD *pdwErrCode)
     if( dwWaitResult != WAIT_OBJECT_0 )
     {
         SET_ERRORCODE(dwErrorCode);
-        ASSERT(FALSE);
+        // ASSERT(FALSE);
         vWriteLog(pstLogger, L"%s(): Debug thread(id: %u) failed to signal init sync event", __FUNCTIONW__, dwThreadId);
-        goto error_return;
+        // goto error_return;
     }
     vWriteLog(pstLogger, L"%s(): Done...", __FUNCTIONW__);
     return TRUE;

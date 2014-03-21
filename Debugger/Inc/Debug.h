@@ -8,10 +8,10 @@
 
 typedef struct _DebugInfo {
     BOOL fDebuggingActiveProcess;
-    WCHAR *pszTargetPath;       // MUST FREE this. Heap variable.
+    WCHAR szTargetPath[SLEN_MAXPATH];
     DWORD dwProcessID;
     HWND hMainWindow;
-    WCHAR *pszInitSyncEvtName;  // DO NOT FREE this. Stack variable.
+    WCHAR szInitSyncEvtName[SLEN_EVENTNAMES];
     TABPAGEINFO stTabPageInfo;
 }DEBUGINFO, *PDEBUGINFO;
 

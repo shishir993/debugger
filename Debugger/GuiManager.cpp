@@ -83,34 +83,25 @@ BOOL fGuiFindTab(int tabIndex, __out DWORD *pdwThreadId, __out DWORD *pdwErrCode
     return TRUE;
 }
 
-BOOL fGuiGetOpenFilename(HWND hMainWindow, WCHAR *pszFilters, __out WCHAR **ppszFilepath, __out DWORD *pdwErrCode)
+BOOL fGuiGetOpenFilename(HWND hMainWindow, WCHAR *pszFilters, __out WCHAR *pszFilepath, DWORD dwBufSize, __out DWORD *pdwErrCode)
 {
     ASSERT(ISVALID_HANDLE(hMainWindow));
     ASSERT(pszFilters);
+    ASSERT(pszFilepath);
 
     DBG_UNREFERENCED_PARAMETER(pdwErrCode);
 
     OPENFILENAME ofn;
 
     DWORD dwErrorCode = ERROR_SUCCESS;
-    WCHAR szLogMessage[SLEN_LOGLINE];
-
-    WCHAR *pszPath = NULL;
-
-    if(!fChlMmAlloc((void**)&pszPath, CONV_WCHARSIZE(SLEN_MAXPATH), &dwErrorCode))
-    {
-        swprintf_s(szLogMessage, _countof(szLogMessage), L"%s(): fChlMmAlloc failed: %u", __FUNCTIONW__, dwErrorCode);
-        vWriteLog(pstLogger, szLogMessage);
-        goto error_return;
-    }
 
     ZeroMemory(&ofn, sizeof(ofn));
     ofn.lStructSize = sizeof(OPENFILENAME);
     ofn.hwndOwner = hMainWindow;
     ofn.lpstrFilter = pszFilters;
     ofn.nFilterIndex = 1;
-    ofn.lpstrFile = pszPath;
-    ofn.nMaxFile = CONV_WCHARSIZE(SLEN_MAXPATH);
+    ofn.lpstrFile = pszFilepath;
+    ofn.nMaxFile = dwBufSize;
     ofn.Flags = OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NONETWORKBUTTON;
 
     if(!GetOpenFileName(&ofn))
@@ -118,12 +109,10 @@ BOOL fGuiGetOpenFilename(HWND hMainWindow, WCHAR *pszFilters, __out WCHAR **ppsz
         dwErrorCode = CommDlgExtendedError();
         goto error_return;
     }
-
-    *ppszFilepath = pszPath;
     return TRUE;
 
-    error_return:
-    IFPTR_FREE(pszPath);
+error_return:
+    pszFilepath[0] = 0;
     return FALSE;
 
 }
