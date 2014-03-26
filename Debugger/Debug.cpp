@@ -183,13 +183,13 @@ static BOOL fDebugNewProgram(PTARGETINFO pstTargetInfo)
     pstTargetInfo->dwMainThreadID = ProcInfo.dwThreadId;
 
     // Create the Threads and Dlls hashtable
-    if(!fChlDsCreateHT(&pstTargetInfo->phtThreads, iChlDsGetNearestTableSizeIndex(100), HT_KEY_DWORD, HT_VAL_PTR))
+    if(!fChlDsCreateHT(&pstTargetInfo->phtThreads, 100, HT_KEY_DWORD, HT_VAL_PTR, TRUE))
     {
         logerror(pstLogger, L"fChlDsCreateHT() failed");
         goto error_return;
     }
 
-    if(!fChlDsCreateHT(&pstTargetInfo->phtDllsLoaded, iChlDsGetNearestTableSizeIndex(500), HT_KEY_DWORD, HT_VAL_STR))
+    if(!fChlDsCreateHT(&pstTargetInfo->phtDllsLoaded, 500, HT_KEY_DWORD, HT_VAL_STR, TRUE))
     {
         logerror(pstLogger, L"fChlDsCreateHT() failed");
         goto error_return;
@@ -220,13 +220,13 @@ static BOOL fDebugActiveProcess(PTARGETINFO pstTargetInfo)
     }
 
     // Create the Threads and Dlls hashtable
-    if(!fChlDsCreateHT(&pstTargetInfo->phtThreads, iChlDsGetNearestTableSizeIndex(100), HT_KEY_DWORD, HT_VAL_PTR))
+    if(!fChlDsCreateHT(&pstTargetInfo->phtThreads, 100, HT_KEY_DWORD, HT_VAL_PTR, TRUE))
     {
         logerror(pstLogger, L"fChlDsCreateHT() failed");
         goto error_return;
     }
 
-    if(!fChlDsCreateHT(&pstTargetInfo->phtDllsLoaded, iChlDsGetNearestTableSizeIndex(500), HT_KEY_DWORD, HT_VAL_STR))
+    if(!fChlDsCreateHT(&pstTargetInfo->phtDllsLoaded, 500, HT_KEY_DWORD, HT_VAL_STR, TRUE))
     {
         logerror(pstLogger, L"fChlDsCreateHT() failed");
         goto error_return;
@@ -251,6 +251,7 @@ static BOOL fDebugActiveProcess(PTARGETINFO pstTargetInfo)
                     case EXCEPTION_DEBUG_EVENT:
                     {
                         logtrace(pstLogger, L"Received EXCEPTION_DEBUG_EVENT while attaching to active process...");
+                        ContinueDebugEvent(de.dwProcessId, de.dwThreadId, DBG_CONTINUE);
                         return TRUE;
                     }
 

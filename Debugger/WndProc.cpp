@@ -8,6 +8,12 @@
 extern PLOGGER pstLogger;
 extern HINSTANCE g_hMainInstance;
 
+struct _DbgSessionStart {
+    BOOL fDebuggingProcess;
+    DWORD dwTargetPID;
+    WCHAR *pszTargetPath;
+};
+
 static HWND hMainTab = NULL;
 static HMENU hMainMenu = NULL;
 
@@ -15,13 +21,16 @@ static int iConInHandle = -1;
 static int iConOutHandle = -1;
 static int iConErrHandle = -1;
 
-// Menu item handlers
-static BOOL fOnDebugProgram(HWND hMainWindow, __out DWORD *pdwErrCode);
+// ** File local funtions **
 static BOOL fCreateConsoleWindow();
+
+// Menu item handlers
+static BOOL fStartDebugSession(HWND hMainWindow, struct _DbgSessionStart *pstSessionInfo, __out DWORD *pdwErrCode);
 
 LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM lParam)
 {
     DWORD dwError = ERROR_SUCCESS;
+    WCHAR szLogMessage[SLEN_LOGLINE];
 
     switch(message)
 	{
@@ -68,7 +77,55 @@ LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM l
 			{
                 case IDM_DEBUGPROGRAM:
                 {
-                    fOnDebugProgram(hMainWindow, &dwError);
+                    HANDLE hFile = NULL;
+                    WCHAR szFilters[] = L"Executables\0*.exe\0\0";
+                    WCHAR szTargetPath[SLEN_MAXPATH];
+
+                    struct _DbgSessionStart stInfo;
+
+                    // Get the path to the target program to be debugged
+                    if(!fGuiGetOpenFilename(hMainWindow, szFilters, szTargetPath, sizeof(szTargetPath), &dwError))
+                    {
+                        swprintf_s(szLogMessage, _countof(szLogMessage), L"%s(): fGuiGetOpenFilename failed: %u", __FUNCTIONW__, dwError);
+                        vWriteLog(pstLogger, szLogMessage);
+                        return 0;
+                    }
+
+                    // Check if the image file exists and can be read
+                    hFile = CreateFile(szTargetPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+                    if(hFile == INVALID_HANDLE_VALUE)
+                    {
+                        MessageBox(hMainWindow, L"Chosen target path not found or access denied. See log file.", L"Error", MB_ICONEXCLAMATION);
+
+                        SET_ERRORCODE(dwError);
+                        swprintf_s(szLogMessage, _countof(szLogMessage), L"%s(): CreateFile failed: %u", __FUNCTIONW__, dwError);
+                        vWriteLog(pstLogger, szLogMessage);
+                        return 0;
+                    }
+                    CloseHandle(hFile);
+
+                    stInfo.fDebuggingProcess = FALSE;
+                    stInfo.pszTargetPath = szTargetPath;
+                    fStartDebugSession(hMainWindow, &stInfo, &dwError);
+                    return 0;
+                }
+
+                case IDM_DEBUGPROCESS:
+                {
+                    struct _DbgSessionStart stInfo;
+
+                    // Init struct
+                    stInfo.dwTargetPID = 0;
+
+                    DialogBoxParam(g_hMainInstance, MAKEINTRESOURCE(IDD_GETPROCID), hMainWindow, fGetProcIdDP, (LPARAM)&stInfo.dwTargetPID);
+                    if(stInfo.dwTargetPID <= 0)
+                    {
+                        logwarn(pstLogger, L"%s(): Did not get PID to debug from dialog box. Last error = %u", __FUNCTIONW__, GetLastError());
+                    }
+                    else
+                    {
+                        fStartDebugSession(hMainWindow, &stInfo, &dwError);
+                    }
                     return 0;
                 }
 
@@ -89,15 +146,13 @@ LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM l
     return DefWindowProc(hMainWindow, message, wParam, lParam);
 }
 
-static BOOL fOnDebugProgram(HWND hMainWindow, __out DWORD *pdwErrCode)
+static BOOL fStartDebugSession(HWND hMainWindow, struct _DbgSessionStart *pstSessionInfo, __out DWORD *pdwErrCode)
 {
     ASSERT(ISVALID_HANDLE(hMainWindow));
+    ASSERT(pstSessionInfo);
 
     DWORD dwErrorCode = ERROR_SUCCESS;
     WCHAR szLogMessage[SLEN_LOGLINE];
-
-    HANDLE hFile = NULL;
-    WCHAR szFilters[] = L"Executables\0*.exe\0\0";
 
     HANDLE hEventInitSync = NULL;
     WCHAR szEventNameSync[SLEN_EVENTNAMES];
@@ -115,26 +170,19 @@ static BOOL fOnDebugProgram(HWND hMainWindow, __out DWORD *pdwErrCode)
         goto error_return;
     }
 
-    // Get the path to the target program to be debugged
-    if(!fGuiGetOpenFilename(hMainWindow, szFilters, pDebugInfo->szTargetPath, sizeof(pDebugInfo->szTargetPath), &dwErrorCode))
+    // Debug thread needs to know whether it is debugging a new program or
+    // an active process
+    if(pstSessionInfo->fDebuggingProcess)
     {
-        swprintf_s(szLogMessage, _countof(szLogMessage), L"%s(): fGuiGetOpenFilename failed: %u", __FUNCTIONW__, dwErrorCode);
-        vWriteLog(pstLogger, szLogMessage);
-        goto error_return;
+        ASSERT(pstSessionInfo->dwTargetPID > 0);
+        pDebugInfo->fDebuggingActiveProcess = TRUE;
+        pDebugInfo->dwProcessID = pstSessionInfo->dwTargetPID;
     }
-
-    // Check if the image file exists and can be read
-    hFile = CreateFile(pDebugInfo->szTargetPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if(hFile == INVALID_HANDLE_VALUE)
+    else
     {
-        MessageBox(hMainWindow, L"Chosen target path not found or access denied. See log file.", L"Error", MB_ICONEXCLAMATION);
-
-        SET_ERRORCODE(dwErrorCode);
-        swprintf_s(szLogMessage, _countof(szLogMessage), L"%s(): CreateFile failed: %u", __FUNCTIONW__, dwErrorCode);
-        vWriteLog(pstLogger, szLogMessage);
-        goto error_return;
+        ASSERT(pstSessionInfo->pszTargetPath);
+        wcscpy_s(pDebugInfo->szTargetPath, _countof(pDebugInfo->szTargetPath), pstSessionInfo->pszTargetPath);
     }
-    CloseHandle(hFile);
 
     // Insert new tab page
     if(!fCreateTabPage(hMainTab, &pDebugInfo->stTabPageInfo, &dwErrorCode))
@@ -156,7 +204,6 @@ static BOOL fOnDebugProgram(HWND hMainWindow, __out DWORD *pdwErrCode)
 
     // Create the debug thread, pass in the required info
     pDebugInfo->hMainWindow = hMainWindow;
-    pDebugInfo->fDebuggingActiveProcess = FALSE;
     wcscpy_s(pDebugInfo->szInitSyncEvtName, _countof(pDebugInfo->szInitSyncEvtName), szEventNameSync);
     if( (hThreadDebug = CreateThread(NULL, 0, dwDebugThreadEntry, (LPVOID)pDebugInfo, 0, &dwThreadId)) == NULL )
     {
@@ -179,6 +226,7 @@ static BOOL fOnDebugProgram(HWND hMainWindow, __out DWORD *pdwErrCode)
     error_return:
     IFPTR_FREE(pDebugInfo);
     IFPTR_SETVAL(pdwErrCode, dwErrorCode);
+    // remove the tab page
     return FALSE;
 }
 

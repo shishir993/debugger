@@ -71,7 +71,7 @@ BOOL fAddThread(CHL_HTABLE *phtThreads, DWORD dwThreadId, LPCREATE_THREAD_DEBUG_
         return FALSE;
 
     memcpy(pThreadDbgInfo, lpThreadInfo, sizeof(CREATE_THREAD_DEBUG_INFO));
-    return fChlDsInsertHT(phtThreads, &dwThreadId, sizeof(DWORD), &pThreadDbgInfo, sizeof(LPCREATE_THREAD_DEBUG_INFO));
+    return fChlDsInsertHT(phtThreads, &dwThreadId, sizeof(DWORD), pThreadDbgInfo, sizeof(LPCREATE_THREAD_DEBUG_INFO));
 }
 
 
