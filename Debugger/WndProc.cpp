@@ -21,6 +21,8 @@ static int iConInHandle = -1;
 static int iConOutHandle = -1;
 static int iConErrHandle = -1;
 
+static int iCurTabIndex = -1;
+
 // ** File local funtions **
 static BOOL fCreateConsoleWindow();
 
@@ -49,6 +51,12 @@ LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM l
                 vMiDebuggerInit(hMainMenu);
             }
 
+            if(!fGuiInitialize(&dwError))
+            {
+                logerror(pstLogger, L"%s(): Cannot initialize Gui module: %d", __FUNCTIONW__, dwError);
+                SendMessage(hMainWindow, WM_CLOSE, 0, 0);
+            }
+
             return 0;
         }
 
@@ -61,8 +69,12 @@ LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM l
 		case WM_DESTROY:
 		{   
             vWriteLog(pstLogger, L"WM_DESTROY");
+            vGuiExit();
+
+            // Terminate logger only at the very end
             vTerminateLogger(pstLogger);
-			PostQuitMessage(0);
+			
+            PostQuitMessage(0);
 			return 0;
 		}
 
@@ -136,6 +148,42 @@ LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM l
                     return 0;
                 }
 
+                case IDM_SUSPENDALLTHREADS:
+                {
+                    DWORD dwThreadId = 0;
+
+                    if(!fGuiFindTab(iCurTabIndex, &dwThreadId, &dwError))
+                    {
+                        logerror(pstLogger, L"Cannot find thread ID for tab index %d", iCurTabIndex);
+
+                        // todo: show messagebox?
+                    }
+                    else
+                    {
+                        PostThreadMessage(dwThreadId, GD_MENU_SUSPALL, 0, NULL);
+                    }
+
+                    return 0;
+                }
+
+                case IDM_RESUMEALLTHREADS:
+                {
+                    DWORD dwThreadId = 0;
+
+                    if(!fGuiFindTab(iCurTabIndex, &dwThreadId, &dwError))
+                    {
+                        logerror(pstLogger, L"Cannot find thread ID for tab index %d", iCurTabIndex);
+
+                        // todo: show messagebox?
+                    }
+                    else
+                    {
+                        PostThreadMessage(dwThreadId, GD_MENU_RESALL, 0, NULL);
+                    }
+                    
+                    return 0;
+                }
+
             }// switch(LOWORD...)
             
             break;
@@ -192,6 +240,8 @@ static BOOL fStartDebugSession(HWND hMainWindow, struct _DbgSessionStart *pstSes
         goto error_return;
     }
 
+    iCurTabIndex = pDebugInfo->stTabPageInfo.iTabIndex;
+
     // Create the init sync event, not signaled to start with
     LoadString(g_hMainInstance, IDS_GUIDBG_SYNC, szEventNameSync, _countof(szEventNameSync));
     hEventInitSync = CreateEvent(NULL, FALSE, FALSE, szEventNameSync);
@@ -204,13 +254,27 @@ static BOOL fStartDebugSession(HWND hMainWindow, struct _DbgSessionStart *pstSes
 
     // Create the debug thread, pass in the required info
     pDebugInfo->hMainWindow = hMainWindow;
+    pDebugInfo->hMainMenu = hMainMenu;
     wcscpy_s(pDebugInfo->szInitSyncEvtName, _countof(pDebugInfo->szInitSyncEvtName), szEventNameSync);
-    if( (hThreadDebug = CreateThread(NULL, 0, dwDebugThreadEntry, (LPVOID)pDebugInfo, 0, &dwThreadId)) == NULL )
+
+    if( (hThreadDebug = CreateThread(NULL, 0, dwDebugThreadEntry, (LPVOID)pDebugInfo, CREATE_SUSPENDED, &dwThreadId)) == NULL )
     {
         SET_ERRORCODE(dwErrorCode);
         vWriteLog(pstLogger, L"%s(): CreateEvent failed: %u %s", __FUNCTIONW__, dwErrorCode, szEventNameSync);
         goto error_return;
     }
+
+    // Add into map
+    if(!fGuiAddTab(iCurTabIndex, dwThreadId, &dwErrorCode))
+    {
+        logerror(pstLogger, L"Could not insert into tab-thread map: %u", dwErrorCode);
+        TerminateThread(hThreadDebug, 0);   // safe to terminate since it is anyway not running
+        FREE_HANDLE(hThreadDebug);
+        goto error_return;
+    }
+
+    // todo: handle return value
+    ResumeThread(hThreadDebug);
 
     dwWaitResult = WaitForSingleObject(hEventInitSync, 5000);
     if( dwWaitResult != WAIT_OBJECT_0 )
@@ -220,10 +284,12 @@ static BOOL fStartDebugSession(HWND hMainWindow, struct _DbgSessionStart *pstSes
         vWriteLog(pstLogger, L"%s(): Debug thread(id: %u) failed to signal init sync event", __FUNCTIONW__, dwThreadId);
         // goto error_return;
     }
+    FREE_HANDLE(hEventInitSync);
     vWriteLog(pstLogger, L"%s(): Done...", __FUNCTIONW__);
     return TRUE;
 
     error_return:
+    FREE_HANDLE(hEventInitSync);
     IFPTR_FREE(pDebugInfo);
     IFPTR_SETVAL(pdwErrCode, dwErrorCode);
     // remove the tab page

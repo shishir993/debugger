@@ -30,6 +30,14 @@ BOOL fGuiInitialize(__out DWORD *pdwErrCode)
     return FALSE;
 }
 
+void vGuiExit()
+{
+    if(pTabThreadMap)
+    {
+        fChlDsDestroyHT(pTabThreadMap);
+    }
+}
+
 BOOL fGuiAddTab(int tabIndex, DWORD threadId, __out DWORD *pdwErrCode)
 {
     ASSERT(pTabThreadMap);
@@ -82,7 +90,7 @@ BOOL fGuiFindTab(int tabIndex, __out DWORD *pdwThreadId, __out DWORD *pdwErrCode
     if(!fChlDsFindHT(pTabThreadMap, &tabIndex, sizeof(tabIndex), &dwThreadId, &iValSize))
         return FALSE;
 
-    pdwThreadId = &dwThreadId;
+    *pdwThreadId = dwThreadId;
     return TRUE;
 }
 
@@ -178,7 +186,6 @@ BOOL CALLBACK fGetProcIdDP(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam
             // populate list with active processes' ID
             if(!fDisplayActiveProcesses(hProcIDList, &paProcIDs, &nProcIDs, &nListItems))
             {
-                vChlMmFree((void**)&paProcIDs);
                 MessageBox(hDlg, L"Cannot display active processes", L"Error", MB_ICONERROR);
                 SendMessage(hDlg, WM_CLOSE, 0, 0);
             }
@@ -211,12 +218,13 @@ BOOL CALLBACK fGetProcIdDP(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam
                         if(!SendDlgItemMessage(hDlg, IDC_LIST_PROCIDS, LVM_GETITEM, 0, (LPARAM)&lvSelItem))
                         {
                             MessageBox(hDlg, L"Error retrieving selected process's PID", L"Error", MB_OK);
+                            *pdwProcessIdToReturn = 0;
                         }
                         else
                         {
                             *pdwProcessIdToReturn = _wtoi(lvSelItem.pszText);
                         }
-                        vChlMmFree((void**)&paProcIDs);
+
                         SendMessage(hDlg, WM_CLOSE, 0, 0);
                     }
                     return TRUE;
@@ -228,7 +236,6 @@ BOOL CALLBACK fGetProcIdDP(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam
                     // populate list with active processes' ID
                     if(!fDisplayActiveProcesses(hProcIDList, &paProcIDs, &nProcIDs, &nListItems))
                     {
-                        vChlMmFree((void**)&paProcIDs);
                         MessageBox(hDlg, L"Cannot display active processes", L"Error", MB_ICONERROR);
                         SendMessage(hDlg, WM_CLOSE, 0, 0);
                     }
@@ -237,7 +244,6 @@ BOOL CALLBACK fGetProcIdDP(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam
                 
                 case IDB_CANCEL:
                 {
-                    vChlMmFree((void**)&paProcIDs);
                     SendMessage(hDlg, WM_CLOSE, 0, 0);
 					return TRUE;
                 }
@@ -274,7 +280,11 @@ BOOL CALLBACK fGetProcIdDP(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam
 
         case WM_CLOSE:
 		{
-            // todo: Free paProcIDs ??
+            if(paProcIDs)
+            {
+                vChlMmFree((void**)&paProcIDs);
+            }
+
 			EndDialog(hDlg, 0);
 			return TRUE;
 		}
@@ -345,7 +355,7 @@ static BOOL fDisplayActiveProcesses(HWND hProcIDList, DWORD **paProcIDs, DWORD *
         lvItem.iItem = nItemsShown;
 		lvItem.mask = LVIF_TEXT;
 		lvItem.pszText = wsIndex;
-		lvItem.cchTextMax = wcsnlen_s(wsIndex, _countof(wsIndex));
+		lvItem.cchTextMax = wcsnlen_s(wsIndex, _countof(wsIndex)) + 1;
 		if( (iRetVal = SendMessage(hProcIDList, LVM_INSERTITEM, 0, (LPARAM)&lvItem)) == -1 )
 		{
 			// error
@@ -360,7 +370,7 @@ static BOOL fDisplayActiveProcesses(HWND hProcIDList, DWORD **paProcIDs, DWORD *
         lvItem.iSubItem = 1;
 		lvItem.mask = LVIF_TEXT;
 		lvItem.pszText = wsProcID;
-		lvItem.cchTextMax = wcsnlen_s(wsProcID, _countof(wsProcID));
+		lvItem.cchTextMax = wcsnlen_s(wsProcID, _countof(wsProcID)) + 1;
 		if( (iRetVal = SendMessage(hProcIDList, LVM_SETITEM, 0, (LPARAM)&lvItem)) == -1 )
 		{
 			// error
@@ -374,7 +384,7 @@ static BOOL fDisplayActiveProcesses(HWND hProcIDList, DWORD **paProcIDs, DWORD *
         lvItem.iSubItem = 2;
 		lvItem.mask = LVIF_TEXT;
 		lvItem.pszText = wsProcName;
-		lvItem.cchTextMax = wcsnlen_s(wsProcName, _countof(wsProcName));
+		lvItem.cchTextMax = wcsnlen_s(wsProcName, _countof(wsProcName)) + 1;
 		if( (iRetVal = SendMessage(hProcIDList, LVM_SETITEM, 0, (LPARAM)&lvItem)) == -1 )
 		{
 			// error

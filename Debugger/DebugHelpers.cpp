@@ -123,7 +123,6 @@ BOOL fDeleteThreadsTable(CHL_HTABLE *phtThreads)
     return fChlDsDestroyHT(phtThreads);
 }
 
-
 BOOL fSuspendAllThreads(CHL_HTABLE *phtThreads)
 {
     ASSERT(phtThreads);
@@ -131,21 +130,20 @@ BOOL fSuspendAllThreads(CHL_HTABLE *phtThreads)
     CHL_HT_ITERATOR itr;
 
     DWORD dwThreadID = 0;
-    LPCREATE_THREAD_DEBUG_INFO *ppThreadDbgInfo = NULL;
+    LPCREATE_THREAD_DEBUG_INFO pThreadDbgInfo = NULL;
 
     int keysize, valsize;
     BOOL fRetVal = TRUE;
 
     fChlDsInitIteratorHT(&itr);
-    while(fChlDsGetNextHT(phtThreads, &itr, &dwThreadID, &keysize, &ppThreadDbgInfo, &valsize))
+    while(fChlDsGetNextHT(phtThreads, &itr, &dwThreadID, &keysize, &pThreadDbgInfo, &valsize))
     {
-        ASSERT(ppThreadDbgInfo && *ppThreadDbgInfo);
-        ASSERT(ISVALID_HANDLE((*ppThreadDbgInfo)->hThread));
+        ASSERT(pThreadDbgInfo);
+        ASSERT(ISVALID_HANDLE(pThreadDbgInfo->hThread));
 
-#ifdef _DEBUG
-        wprintf_s(L"Suspending thread %u\n", dwThreadID);
-#endif
-        if( SuspendThread((*ppThreadDbgInfo)->hThread) == -1 )
+        dbgwprintf(L"Suspending thread %u\n", dwThreadID);
+
+        if( SuspendThread(pThreadDbgInfo->hThread) == -1 )
         {
             logerror(pstLogger, L"SuspendThread() failed for thread %u: %u", dwThreadID, GetLastError());
             fRetVal = FALSE;
@@ -163,22 +161,20 @@ BOOL fResumeAllThreads(CHL_HTABLE *phtThreads)
     CHL_HT_ITERATOR itr;
 
     DWORD dwThreadID = 0;
-    LPCREATE_THREAD_DEBUG_INFO *ppThreadDbgInfo = NULL;
+    LPCREATE_THREAD_DEBUG_INFO pThreadDbgInfo = NULL;
 
     int keysize, valsize;
     BOOL fRetVal = TRUE;
 
     fChlDsInitIteratorHT(&itr);
-    while(fChlDsGetNextHT(phtThreads, &itr, &dwThreadID, &keysize, &ppThreadDbgInfo, &valsize))
+    while(fChlDsGetNextHT(phtThreads, &itr, &dwThreadID, &keysize, &pThreadDbgInfo, &valsize))
     {
-        ASSERT(ppThreadDbgInfo && *ppThreadDbgInfo);
-        ASSERT(ISVALID_HANDLE((*ppThreadDbgInfo)->hThread));
+        ASSERT(pThreadDbgInfo);
+        ASSERT(ISVALID_HANDLE(pThreadDbgInfo->hThread));
 
-#ifdef _DEBUG
-        wprintf(L"Resuming thread %u\n", dwThreadID);
-#endif
+        dbgwprintf(L"Resuming thread %u\n", dwThreadID);
 
-        if( ResumeThread((*ppThreadDbgInfo)->hThread) == -1 )
+        if( ResumeThread(pThreadDbgInfo->hThread) == -1 )
         {
             logerror(pstLogger, L"ResumeThread() failed for thread %u: %u", dwThreadID, GetLastError());
             fRetVal = FALSE;

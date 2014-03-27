@@ -11,6 +11,6 @@
 #include "StringLengths.h"
 #include "SourceHelpers.h"
 #include "Logger.h"
-
+#include "CustomEvents.h"
 
 #endif // _COMMON_H

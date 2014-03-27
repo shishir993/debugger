@@ -9,6 +9,7 @@
 #include "CHelpLibDll.h"
 
 BOOL fGuiInitialize(__out DWORD *pdwErrCode);
+void vGuiExit();
 BOOL fGuiAddTab(int tabIndex, DWORD threadId, __out DWORD *pdwErrCode);
 BOOL fGuiRemTab(int tabIndex, __out DWORD *pdwErrCode);
 BOOL fGuiFindTab(int tabIndex, __out DWORD *pdwThreadId, __out DWORD *pdwErrCode);

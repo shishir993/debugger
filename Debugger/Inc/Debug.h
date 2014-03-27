@@ -5,12 +5,14 @@
 #include "Common.h"
 #include "UICreator.h"
 #include "CHelpLibDll.h"
+#include "MenuItems.h"
 
 typedef struct _DebugInfo {
     BOOL fDebuggingActiveProcess;
     WCHAR szTargetPath[SLEN_MAXPATH];
     DWORD dwProcessID;
     HWND hMainWindow;
+    HMENU hMainMenu;
     WCHAR szInitSyncEvtName[SLEN_EVENTNAMES];
     TABPAGEINFO stTabPageInfo;
 }DEBUGINFO, *PDEBUGINFO;

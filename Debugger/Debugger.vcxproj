@@ -101,6 +101,7 @@
     <ClCompile Include="WinMain.cpp" />
     <ClCompile Include="WndProc.cpp" />
     <ClInclude Include="Inc\Assert.h" />
+    <ClInclude Include="Inc\CustomEvents.h" />
     <ClInclude Include="Inc\Debug.h" />
     <ClInclude Include="Inc\DebugHelpers.h" />
     <ClInclude Include="Inc\GuiManager.h" />

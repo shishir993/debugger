@@ -2,6 +2,10 @@
 #include "Inc\Debug.h"
 #include "Inc\DebugHelpers.h"
 
+#define STATE_DBG_INVALID       0
+#define STATE_DBG_RUNNING       1
+#define STATE_DBG_DEBUGGING     2
+
 extern PLOGGER pstLogger;
 extern HINSTANCE g_hMainInstance;
 
@@ -25,6 +29,8 @@ typedef struct _TargetInfo {
     int nCurDllsLoaded;
     int nTotalDllsLoaded;
 
+    int iDebugState;
+
     LPDEBUG_EVENT lpDebugEvent;
 }TARGETINFO, *PTARGETINFO;
 
@@ -35,6 +41,7 @@ static BOOL fDebugActiveProcess(PTARGETINFO pstTargetInfo);
 static void vOnThisThreadExit(PTARGETINFO *ppstTargetInfo);
 static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo);
 static BOOL fProcessDebugEventLoop(PTARGETINFO pstTargetInfo);
+static void vSetMenuItemsState(PTARGETINFO pstTargetInfo);
 
 // Debug event handlers
 BOOL fOnException(PTARGETINFO pstTargetInfo, __out DWORD *pdwContinueStatus);
@@ -93,6 +100,9 @@ DWORD WINAPI dwDebugThreadEntry(LPVOID lpvArgs)
             // todo:
         }
     }
+
+    pstTargetInfo->iDebugState = STATE_DBG_RUNNING;
+    vSetMenuItemsState(pstTargetInfo);
 
     // Start from-gui message loop and debug event loop
     fProcessingGuiMessages = fProcessingDebugEventLoop = TRUE;
@@ -339,8 +349,84 @@ static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo)
 {
     ASSERT(pstTargetInfo);
 
-    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
-    return FALSE;
+    MSG msg;
+
+    while( PeekMessage(&msg, (HWND)-1, CUSTOM_EVENT_START, CUSTOM_EVENT_END, PM_REMOVE) )
+    {
+        switch(msg.message)
+        {
+            case GD_TAB_INFOCUS:
+            {
+                vSetMenuItemsState(pstTargetInfo);
+                break;
+            }
+
+            case GD_TAB_OUTFOCUS:
+            {
+                // todo: nothing as of now
+                break;
+            }
+
+            case GD_MENU_CONTINUE:
+            {
+                break;
+            }
+
+            case GD_MENU_STEPINTO:
+            {
+                break;
+            }
+
+            case GD_MENU_STEPOVER:
+            {
+                break;
+            }
+
+            case GD_MENU_STEPOUT:
+            {
+                break;
+            }
+
+            case GD_MENU_BREAKALL:
+            {
+                // todo: break all
+                // set state to debugging
+                // modify menu items state
+                break;
+            }
+
+            case GD_MENU_SUSPALL:
+            {
+                if(!fSuspendAllThreads(pstTargetInfo->phtThreads))
+                {
+                    MessageBox(NULL, L"Error suspending threads. See log file.", L"Error", MB_ICONWARNING);
+                }
+                break;
+            }
+
+            case GD_MENU_RESALL:
+            {
+                if(!fResumeAllThreads(pstTargetInfo->phtThreads))
+                {
+                    MessageBox(NULL, L"Error resuming threads. See log file.", L"Error", MB_ICONWARNING);
+                }
+                break;
+            }
+
+            case GD_MENU_SUSPRES:
+            {
+                break;
+            }
+
+            default:
+            {
+                ASSERT(FALSE);
+                break;
+            }
+        }
+    }
+    
+    return TRUE;
 }
 
 static BOOL fProcessDebugEventLoop(PTARGETINFO pstTargetInfo)
@@ -722,4 +808,30 @@ BOOL fOnOutputDebugString(PTARGETINFO pstTargetInfo)
     }
 
     return TRUE;
+}
+
+static void vSetMenuItemsState(PTARGETINFO pstTargetInfo)
+{
+    ASSERT(pstTargetInfo);
+
+    switch(pstTargetInfo->iDebugState)
+    {
+        case STATE_DBG_RUNNING:
+        {
+            vMiDebuggerRunning(pstTargetInfo->pstDebugInfoFromGui->hMainMenu);
+            break;
+        }
+
+        case STATE_DBG_DEBUGGING:
+        {
+            vMiDebuggerDebugging(pstTargetInfo->pstDebugInfoFromGui->hMainMenu);
+            break;
+        }
+
+        default:
+        {
+            ASSERT(FALSE);
+            break;
+        }
+    }
 }
