@@ -22,7 +22,7 @@ BOOL fCreateMainTabControl(HWND hMainWnd, __out HWND *phTabControl, DWORD *pdwEr
         goto error_return;
     }
 
-    hTab = CreateWindow(WC_TABCONTROL, NULL, WS_CHILD|WS_VISIBLE, rcClientArea.left + 5, rcClientArea.top + 5, 
+    hTab = CreateWindow(WC_TABCONTROL, NULL, WS_CHILD|WS_VISIBLE|WS_BORDER, rcClientArea.left + 5, rcClientArea.top + 5, 
                         rcClientArea.right - 10, rcClientArea.bottom - 10, hMainWnd, (HMENU)IDC_MAINTAB, g_hMainInstance, NULL);
 
     if(ISNULL(hTab))
@@ -93,7 +93,7 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
     int y60 = y30 + y30 + PADDING_TOGETHER;
     int y90 = y60 + y30 + PADDING_TOGETHER;
     int rightCtrlWidth = xMax - x50 - PADDING_LONE - PADDING_TOGETHER;
-    int commandHeight = yMax - y90 - PADDING_LONE * 3 - PADDING_TOGETHER;
+    int commandHeight = yMax - y90;
 
     HINSTANCE hInstance = GetModuleHandle(NULL);
 
@@ -113,11 +113,13 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
 
     ISNULL_GOTO(hEditDisass, error_return);
 
+    RECT rcTemp;
+
     // Three list views
     hListCStack = CreateWindow(
                                 WC_LISTVIEW,
                                 NULL,
-                                WS_CHILD | LVS_REPORT,
+                                WS_CHILD | WS_BORDER | LVS_REPORT,
                                 xRightCtrl,
                                 y0 + PADDING_LONE,
                                 rightCtrlWidth,
@@ -128,11 +130,12 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                                 NULL);
 
     ISNULL_GOTO(hListCStack, error_return);
+    GetWindowRect(hListCStack, &rcTemp);
 
     hListRegisters = CreateWindow( 
                                     WC_LISTVIEW,
                                     NULL,
-                                    WS_CHILD | LVS_REPORT,
+                                    WS_CHILD | WS_BORDER | LVS_REPORT,
                                     xRightCtrl,
                                     y30 + PADDING_LONE + PADDING_TOGETHER,
                                     rightCtrlWidth,
@@ -143,11 +146,12 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                                     NULL);
 
     ISNULL_GOTO(hListRegisters, error_return);
+    GetWindowRect(hListRegisters, &rcTemp);
 
     hListThreads = CreateWindow( 
                                     WC_LISTVIEW,
                                     NULL,
-                                    WS_CHILD | LVS_REPORT,
+                                    WS_CHILD | WS_BORDER | LVS_REPORT,
                                     xRightCtrl,
                                     y60 + PADDING_LONE*2 + PADDING_TOGETHER,
                                     rightCtrlWidth,
@@ -158,12 +162,13 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                                     NULL);
 
     ISNULL_GOTO(hListThreads, error_return);
+    GetWindowRect(hListThreads, &rcTemp);
 
     // Command static and edit controls
     hStaticCommand = CreateWindow(
                                     WC_STATIC,
                                     NULL,
-                                    WS_CHILD | WS_VISIBLE,
+                                    WS_CHILD | WS_BORDER | WS_VISIBLE,
                                     xRightCtrl,
                                     y90 + PADDING_LONE * 3 + PADDING_TOGETHER,
                                     50,
@@ -178,8 +183,8 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
 
     RECT rcStatic;
     GetWindowRect(hStaticCommand, &rcStatic);
-    ScreenToClient(hStaticCommand, (LPPOINT)&rcStatic.left);
-    ScreenToClient(hStaticCommand, (LPPOINT)&rcStatic.right);
+    ScreenToClient(hTab, (LPPOINT)&rcStatic.left);
+    ScreenToClient(hTab, (LPPOINT)&rcStatic.right);
     hEditCommand = CreateWindow(
                                 WC_EDIT,
                                 NULL,
@@ -199,7 +204,7 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
     hTabBottom = CreateWindow(
                                 WC_TABCONTROL,
                                 NULL,
-                                WS_CHILD | WS_VISIBLE,
+                                WS_CHILD | WS_BORDER | WS_VISIBLE,
                                 x0 + PADDING_LONE,
                                 y75 + PADDING_LONE + PADDING_TOGETHER,
                                 leftCtrlWidth,

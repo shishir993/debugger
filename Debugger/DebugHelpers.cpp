@@ -59,7 +59,6 @@ BOOL fGetExceptionName(DWORD excode, __out WCHAR *pwsBuffer, int bufSize)
     return (LoadString(GetModuleHandle(NULL), iStringID, pwsBuffer, bufSize) != 0);
 }
 
-
 BOOL fAddThread(CHL_HTABLE *phtThreads, DWORD dwThreadId, LPCREATE_THREAD_DEBUG_INFO lpThreadInfo)
 {
     ASSERT(phtThreads);
@@ -73,7 +72,6 @@ BOOL fAddThread(CHL_HTABLE *phtThreads, DWORD dwThreadId, LPCREATE_THREAD_DEBUG_
     memcpy(pThreadDbgInfo, lpThreadInfo, sizeof(CREATE_THREAD_DEBUG_INFO));
     return fChlDsInsertHT(phtThreads, &dwThreadId, sizeof(DWORD), pThreadDbgInfo, sizeof(LPCREATE_THREAD_DEBUG_INFO));
 }
-
 
 BOOL fRemoveThread(CHL_HTABLE *phtThreads, DWORD dwThreadId, __out LPCREATE_THREAD_DEBUG_INFO lpThreadInfo)
 {
