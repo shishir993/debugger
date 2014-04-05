@@ -46,7 +46,9 @@ BOOL fBpTerminate(void *pBreakpoints)
 {
 
 #if _DEBUG
-            
+
 #endif
 
+    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+    return FALSE;
 }

@@ -2,9 +2,12 @@
 #include "Inc\UICreator.h"
 #include "Inc\DebuggerDP.h"
 #include "Inc\SourceHelpers.h"
+#include "CHelpLibDll.h"
 
 extern HINSTANCE g_hMainInstance;
+extern PLOGGER pstLogger;
 
+// File local functions
 static BOOL fInsertTabItem(HWND hTab, WCHAR *pszText, __out int *piNewIndex, __out DWORD *pdwErrCode);
 
 BOOL fCreateMainTabControl(HWND hMainWnd, __out HWND *phTabControl, DWORD *pdwErrCode)
@@ -80,35 +83,32 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
     int xMax = rcTabDisplay.right;
     int yMax = rcTabDisplay.bottom;
 
-    // For Disass window and bottom tab
-    int x50 = int(xMax * 0.50);
-    int y75 = int(yMax * 0.75);
-    int leftCtrlWidth = x50 - x0 - PADDING_LONE - PADDING_TOGETHER;
-    int disassHeight = y75 - y0 - PADDING_LONE - PADDING_TOGETHER;
-    int bottomTabHeight = yMax - y75 - PADDING_LONE - PADDING_TOGETHER;
+    int x50 = xMax * 0.5;
+    int y75 = yMax * 0.75;
+    int y35 = yMax * 0.35;
+    int y55 = yMax * 0.55;
+    int y85 = yMax * 0.85;
 
-    // For the three list views and command window
-    int xRightCtrl = x50 + PADDING_LONE + PADDING_TOGETHER;
-    int y30 = int(yMax * 0.3 + PADDING_LONE + PADDING_TOGETHER);
-    int y60 = y30 + y30 + PADDING_TOGETHER;
-    int y90 = y60 + y30 + PADDING_TOGETHER;
-    int rightCtrlWidth = xMax - x50 - PADDING_LONE - PADDING_TOGETHER;
-    int commandHeight = yMax - y90;
-
-    HINSTANCE hInstance = GetModuleHandle(NULL);
+    int w50 = x50;          // width 1/2
+    int h75 = y75;          // height 3/4
+    int h25 = yMax - y75;   // height 1/4
+    int h35 = y35;          // height 35/100
+    int h20 = y55 - y35;
+    int h30 = y85 - y55;
+    int h15 = yMax - y85;
 
     // Create the disass window
     hEditDisass = CreateWindow( 
                             WC_EDIT, 
                             NULL, 
                             WS_CHILD | WS_BORDER | WS_VISIBLE | ES_LEFT | ES_MULTILINE | ES_READONLY,
-                            x0 + PADDING_LONE,
-                            y0 + PADDING_LONE,
-                            leftCtrlWidth,
-                            disassHeight,
+                            x0,
+                            y0,
+                            w50,
+                            h75,
                             hTab,
                             (HMENU)IDC_EDIT_DISASS,
-                            hInstance,
+                            g_hMainInstance,
                             NULL);
 
     ISNULL_GOTO(hEditDisass, error_return);
@@ -120,13 +120,13 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                                 WC_LISTVIEW,
                                 NULL,
                                 WS_CHILD | WS_BORDER | LVS_REPORT,
-                                xRightCtrl,
-                                y0 + PADDING_LONE,
-                                rightCtrlWidth,
-                                y30 - PADDING_LONE - PADDING_TOGETHER,
+                                x50,
+                                y0,
+                                w50,
+                                h35,
                                 hTab,
                                 (HMENU)IDC_LIST_CALLSTACK,
-                                hInstance,
+                                g_hMainInstance,
                                 NULL);
 
     ISNULL_GOTO(hListCStack, error_return);
@@ -136,13 +136,13 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                                     WC_LISTVIEW,
                                     NULL,
                                     WS_CHILD | WS_BORDER | LVS_REPORT,
-                                    xRightCtrl,
-                                    y30 + PADDING_LONE + PADDING_TOGETHER,
-                                    rightCtrlWidth,
-                                    y30 - PADDING_LONE - PADDING_TOGETHER,
+                                    x50,
+                                    y35,
+                                    w50,
+                                    h20,
                                     hTab,
                                     (HMENU)IDC_LIST_REGISTERS,
-                                    hInstance,
+                                    g_hMainInstance,
                                     NULL);
 
     ISNULL_GOTO(hListRegisters, error_return);
@@ -152,50 +152,56 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                                     WC_LISTVIEW,
                                     NULL,
                                     WS_CHILD | WS_BORDER | LVS_REPORT,
-                                    xRightCtrl,
-                                    y60 + PADDING_LONE*2 + PADDING_TOGETHER,
-                                    rightCtrlWidth,
-                                    y30 -PADDING_LONE*2 - PADDING_TOGETHER,
+                                    x50,
+                                    y55,
+                                    w50,
+                                    h30,
                                     hTab,
                                     (HMENU)IDC_LIST_THREADS,
-                                    hInstance,
+                                    g_hMainInstance,
                                     NULL);
 
     ISNULL_GOTO(hListThreads, error_return);
     GetWindowRect(hListThreads, &rcTemp);
+
+    // Calculate width for the text 'Command:' without quotes
+    WCHAR szTextCommand[] = L"Command:";
+    int iTextWidth, iTextHeight;
+    
+    if(!fChlGuiGetTextArea(hTab, wcslen(szTextCommand), &iTextWidth, &iTextHeight))
+    {
+        logerror(pstLogger, L"%s(): fChlGuiGetTextArea() failed %u", GetLastError());
+        goto error_return;
+    }
 
     // Command static and edit controls
     hStaticCommand = CreateWindow(
                                     WC_STATIC,
                                     NULL,
                                     WS_CHILD | WS_BORDER | WS_VISIBLE,
-                                    xRightCtrl,
-                                    y90 + PADDING_LONE * 3 + PADDING_TOGETHER,
-                                    50,
-                                    commandHeight,
+                                    x50,
+                                    y85,
+                                    iTextWidth + 2,
+                                    iTextHeight,
                                     hTab,
                                     NULL,
-                                    hInstance,
+                                    g_hMainInstance,
                                     NULL);
 
     ISNULL_GOTO(hStaticCommand, error_return);
-    SendMessage(hStaticCommand, WM_SETTEXT, 0, (LPARAM)L"Command: ");
+    SendMessage(hStaticCommand, WM_SETTEXT, 0, (LPARAM)szTextCommand);
 
-    RECT rcStatic;
-    GetWindowRect(hStaticCommand, &rcStatic);
-    ScreenToClient(hTab, (LPPOINT)&rcStatic.left);
-    ScreenToClient(hTab, (LPPOINT)&rcStatic.right);
     hEditCommand = CreateWindow(
                                 WC_EDIT,
                                 NULL,
                                 WS_CHILD | WS_BORDER | WS_VISIBLE | ES_LEFT,
-                                xRightCtrl + (rcStatic.right - rcStatic.left) + PADDING_TOGETHER,
-                                y90 + PADDING_LONE * 3 + PADDING_TOGETHER,
-                                rightCtrlWidth - rcStatic.right - rcStatic.left - PADDING_TOGETHER,
-                                commandHeight,
+                                x50 + iTextWidth + 2,
+                                y85,
+                                w50 - iTextWidth - 2,
+                                h15,
                                 hTab,
                                 NULL,
-                                hInstance,
+                                g_hMainInstance,
                                 NULL);
 
     ISNULL_GOTO(hEditCommand, error_return);
@@ -205,13 +211,13 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                                 WC_TABCONTROL,
                                 NULL,
                                 WS_CHILD | WS_BORDER | WS_VISIBLE,
-                                x0 + PADDING_LONE,
-                                y75 + PADDING_LONE + PADDING_TOGETHER,
-                                leftCtrlWidth,
-                                bottomTabHeight,
+                                x0,
+                                y75,
+                                w50,
+                                h25,
                                 hTab,
                                 (HMENU)IDC_TAB_BOTTOM,
-                                hInstance,
+                                g_hMainInstance,
                                 NULL);
     ISNULL_GOTO(hTabBottom, error_return);
 

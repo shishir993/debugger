@@ -7,8 +7,11 @@
 #include "CHelpLibDll.h"
 #include "MenuItems.h"
 
+#define EXITCODE_TARGET_TERM    0xDEAD
+
 typedef struct _DebugInfo {
     BOOL fDebuggingActiveProcess;
+    BOOL fBreakAtMain;
     WCHAR szTargetPath[SLEN_MAXPATH];
     DWORD dwProcessID;
     HWND hMainWindow;

@@ -10,6 +10,7 @@
 //
 #define GD_TAB_INFOCUS      WM_USER
 #define GD_TAB_OUTFOCUS     (WM_USER + 1)
+
 #define GD_MENU_CONTINUE    (WM_USER + 2)
 #define GD_MENU_STEPINTO    (WM_USER + 3)
 #define GD_MENU_STEPOVER    (WM_USER + 4)
@@ -19,8 +20,14 @@
 #define GD_MENU_RESALL      (WM_USER + 8)
 #define GD_MENU_SUSPRES     (WM_USER + 9)
 
+#define GD_SESS_TERM        (WM_USER + 10)
+#define GD_SESS_DETACH      (WM_USER + 11)
+#define GD_SESS_DUMPTERM    (WM_USER + 12)
+
+#define DG_SESS_TERM        (WM_USER + 70)
+
 // Start and end values for use in GetMessage()
-#define CUSTOM_EVENT_START  GD_TAB_INFOCUS
-#define CUSTOM_EVENT_END    GD_MENU_SUSPRES
+#define CUSTOM_GDEVENT_START  GD_TAB_INFOCUS
+#define CUSTOM_GDEVENT_END    GD_SESS_DUMPTERM
 
 #endif // _CUSTOMEVENTS_H

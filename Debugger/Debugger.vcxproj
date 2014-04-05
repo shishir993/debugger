@@ -64,6 +64,7 @@
     </Link>
     <PostBuildEvent>
       <Command>xcopy /y $(ProjectDir)Lib\$(Configuration)\CHelpLib.dll $(OutDir)</Command>
+      <Message>Copy external DLL to output folder</Message>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -91,16 +92,19 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="Assert.cpp" />
+    <ClCompile Include="Breakpoint.cpp" />
     <ClCompile Include="Debug.cpp" />
     <ClCompile Include="DebuggerDP.cpp" />
     <ClCompile Include="DebugHelpers.cpp" />
     <ClCompile Include="GuiManager.cpp" />
     <ClCompile Include="Logger.cpp" />
     <ClCompile Include="MenuItems.cpp" />
+    <ClCompile Include="SymbolEngine.cpp" />
     <ClCompile Include="UICreator.cpp" />
     <ClCompile Include="WinMain.cpp" />
     <ClCompile Include="WndProc.cpp" />
     <ClInclude Include="Inc\Assert.h" />
+    <ClInclude Include="Inc\Breakpoint.h" />
     <ClInclude Include="Inc\CustomEvents.h" />
     <ClInclude Include="Inc\Debug.h" />
     <ClInclude Include="Inc\DebugHelpers.h" />
@@ -112,6 +116,7 @@
     <ClInclude Include="Inc\DebuggerDP.h" />
     <ClInclude Include="Inc\Logger.h" />
     <ClInclude Include="Inc\StringLengths.h" />
+    <ClInclude Include="Inc\SymbolEngine.h" />
     <ClInclude Include="Inc\UICommon.h" />
     <ClInclude Include="Inc\UICreator.h" />
     <ClInclude Include="Inc\WndProc.h" />

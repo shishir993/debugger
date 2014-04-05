@@ -8,12 +8,6 @@
 extern PLOGGER pstLogger;
 extern HINSTANCE g_hMainInstance;
 
-struct _DbgSessionStart {
-    BOOL fDebuggingProcess;
-    DWORD dwTargetPID;
-    WCHAR *pszTargetPath;
-};
-
 static HWND hMainTab = NULL;
 static HMENU hMainMenu = NULL;
 
@@ -32,14 +26,16 @@ static BOOL fStartDebugSession(HWND hMainWindow, struct _DbgSessionStart *pstSes
 LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM lParam)
 {
     DWORD dwError = ERROR_SUCCESS;
-    WCHAR szLogMessage[SLEN_LOGLINE];
 
     switch(message)
 	{
 		case WM_CREATE:
 		{
             vWriteLog(pstLogger, L"WM_CREATE");
+
+#if _DEBUG
             fCreateConsoleWindow();
+#endif  
             if(!fCreateMainTabControl(hMainWindow, &hMainTab, &dwError))
             {
                 vWriteLog(pstLogger, L"%s(): Cannot create main control: %d", __FUNCTIONW__, dwError);
@@ -83,60 +79,112 @@ LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM l
             break;
         }
 
+        case WM_NOTIFY:
+        {
+            switch(((LPNMHDR)lParam)->code)
+            {
+                case TCN_SELCHANGE:
+                {
+                    iCurTabIndex = TabCtrl_GetCurSel(hMainTab);
+                    if(iCurTabIndex < 0)
+                    {
+                        logwarn(pstLogger, L"%s() %d: TabCtrl_GetCurSel() failed %u", __FUNCTIONW__, __LINE__, GetLastError());
+                    }
+                    return 0;
+                }
+            }
+            break;
+        }
+
         case WM_COMMAND:
 		{
 			switch(LOWORD(wParam))
 			{
                 case IDM_DEBUGPROGRAM:
                 {
-                    HANDLE hFile = NULL;
-                    WCHAR szFilters[] = L"Executables\0*.exe\0\0";
-                    WCHAR szTargetPath[SLEN_MAXPATH];
+                    DBG_SESSIONSTART stSessionInfo;
 
-                    struct _DbgSessionStart stInfo;
+                    // Init struct
+                    stSessionInfo.szTargetPath[0] = 0;
 
-                    // Get the path to the target program to be debugged
-                    if(!fGuiGetOpenFilename(hMainWindow, szFilters, szTargetPath, sizeof(szTargetPath), &dwError))
+                    DialogBoxParam(g_hMainInstance, MAKEINTRESOURCE(IDD_OPENPROGRAM), hMainWindow, fGetNewProgramDP, (LPARAM)&stSessionInfo);
+                    if(stSessionInfo.szTargetPath[0] == 0)
                     {
-                        swprintf_s(szLogMessage, _countof(szLogMessage), L"%s(): fGuiGetOpenFilename failed: %u", __FUNCTIONW__, dwError);
-                        vWriteLog(pstLogger, szLogMessage);
-                        return 0;
+                        logwarn(pstLogger, L"%s(): Did not get target path to debug from dialog box. Last error = %u", __FUNCTIONW__, GetLastError());
                     }
-
-                    // Check if the image file exists and can be read
-                    hFile = CreateFile(szTargetPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-                    if(hFile == INVALID_HANDLE_VALUE)
+                    else
                     {
-                        MessageBox(hMainWindow, L"Chosen target path not found or access denied. See log file.", L"Error", MB_ICONEXCLAMATION);
-
-                        SET_ERRORCODE(dwError);
-                        swprintf_s(szLogMessage, _countof(szLogMessage), L"%s(): CreateFile failed: %u", __FUNCTIONW__, dwError);
-                        vWriteLog(pstLogger, szLogMessage);
-                        return 0;
+                        fStartDebugSession(hMainWindow, &stSessionInfo, &dwError);
                     }
-                    CloseHandle(hFile);
-
-                    stInfo.fDebuggingProcess = FALSE;
-                    stInfo.pszTargetPath = szTargetPath;
-                    fStartDebugSession(hMainWindow, &stInfo, &dwError);
                     return 0;
                 }
 
                 case IDM_DEBUGPROCESS:
                 {
-                    struct _DbgSessionStart stInfo;
+                    DBG_SESSIONSTART stSessionInfo;
 
                     // Init struct
-                    stInfo.dwTargetPID = 0;
+                    stSessionInfo.dwTargetPID = 0;
 
-                    DialogBoxParam(g_hMainInstance, MAKEINTRESOURCE(IDD_GETPROCID), hMainWindow, fGetProcIdDP, (LPARAM)&stInfo.dwTargetPID);
-                    if(stInfo.dwTargetPID <= 0)
+                    DialogBoxParam(g_hMainInstance, MAKEINTRESOURCE(IDD_GETPROCID), hMainWindow, fGetProcIdDP, (LPARAM)&stSessionInfo);
+                    if(stSessionInfo.dwTargetPID == 0)
                     {
                         logwarn(pstLogger, L"%s(): Did not get PID to debug from dialog box. Last error = %u", __FUNCTIONW__, GetLastError());
                     }
                     else
                     {
-                        fStartDebugSession(hMainWindow, &stInfo, &dwError);
+                        fStartDebugSession(hMainWindow, &stSessionInfo, &dwError);
+                    }
+                    return 0;
+                }
+
+                case IDM_TERMINATETARGET:
+                {
+                    DWORD dwThreadId = 0;
+
+                    if(!fGuiFindTab(iCurTabIndex, &dwThreadId, &dwError))
+                    {
+                        logerror(pstLogger, L"Cannot find thread ID for tab index %d", iCurTabIndex);
+
+                        // todo: show messagebox?
+                    }
+                    else
+                    {
+                        PostThreadMessage(dwThreadId, GD_SESS_TERM, 0, NULL);
+                    }
+                    return 0;
+                }
+
+                case IDM_DETACHFROMTARGET:
+                {
+                    DWORD dwThreadId = 0;
+
+                    if(!fGuiFindTab(iCurTabIndex, &dwThreadId, &dwError))
+                    {
+                        logerror(pstLogger, L"Cannot find thread ID for tab index %d", iCurTabIndex);
+
+                        // todo: show messagebox?
+                    }
+                    else
+                    {
+                        PostThreadMessage(dwThreadId, GD_SESS_DETACH, 0, NULL);
+                    }
+                    return 0;
+                }
+
+                case IDM_DUMPANDTERMINATETARGET:
+                {
+                    DWORD dwThreadId = 0;
+
+                    if(!fGuiFindTab(iCurTabIndex, &dwThreadId, &dwError))
+                    {
+                        logerror(pstLogger, L"Cannot find thread ID for tab index %d", iCurTabIndex);
+
+                        // todo: show messagebox?
+                    }
+                    else
+                    {
+                        PostThreadMessage(dwThreadId, GD_SESS_DUMPTERM, 0, NULL);
                     }
                     return 0;
                 }
@@ -144,6 +192,8 @@ LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM l
 				case IDM_EXITDEBUGGER:
 				{
                     vWriteLog(pstLogger, L"IDM_EXITDEBUGGER");
+
+                    // TODO: detach/terminate from all targets being debugged
                     SendMessage(hMainWindow, WM_CLOSE, 0, 0);
                     return 0;
                 }
@@ -189,6 +239,20 @@ LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM l
             break;
 
         }// case WM_COMMAND
+
+        // ****************************** Messages from Debug thread ******************************
+        case DG_SESS_TERM:
+        {
+            if(!fGuiRemTab((int)wParam, &dwError))
+            {
+                logwarn(pstLogger, L"%s(): fGuiRemTab() failed to remove index %d %u", (int)wParam, dwError);
+            }
+
+            // Continue even if we failed to remove from hash table (next time we insert, it will simply get overwritten)
+            SendMessage(hMainTab, TCM_DELETEITEM, (int)wParam, (LPARAM)NULL);
+            return 0;
+        }
+
     }
 
     return DefWindowProc(hMainWindow, message, wParam, lParam);
@@ -220,7 +284,7 @@ static BOOL fStartDebugSession(HWND hMainWindow, struct _DbgSessionStart *pstSes
 
     // Debug thread needs to know whether it is debugging a new program or
     // an active process
-    if(pstSessionInfo->fDebuggingProcess)
+    if(pstSessionInfo->fDebuggingActiveProcess)
     {
         ASSERT(pstSessionInfo->dwTargetPID > 0);
         pDebugInfo->fDebuggingActiveProcess = TRUE;
@@ -228,8 +292,8 @@ static BOOL fStartDebugSession(HWND hMainWindow, struct _DbgSessionStart *pstSes
     }
     else
     {
-        ASSERT(pstSessionInfo->pszTargetPath);
-        wcscpy_s(pDebugInfo->szTargetPath, _countof(pDebugInfo->szTargetPath), pstSessionInfo->pszTargetPath);
+        ASSERT(pstSessionInfo->szTargetPath[0] != 0);
+        wcscpy_s(pDebugInfo->szTargetPath, _countof(pDebugInfo->szTargetPath), pstSessionInfo->szTargetPath);
     }
 
     // Insert new tab page
@@ -255,6 +319,7 @@ static BOOL fStartDebugSession(HWND hMainWindow, struct _DbgSessionStart *pstSes
     // Create the debug thread, pass in the required info
     pDebugInfo->hMainWindow = hMainWindow;
     pDebugInfo->hMainMenu = hMainMenu;
+    pDebugInfo->fBreakAtMain = pstSessionInfo->fBreakAtMain;
     wcscpy_s(pDebugInfo->szInitSyncEvtName, _countof(pDebugInfo->szInitSyncEvtName), szEventNameSync);
 
     if( (hThreadDebug = CreateThread(NULL, 0, dwDebugThreadEntry, (LPVOID)pDebugInfo, CREATE_SUSPENDED, &dwThreadId)) == NULL )

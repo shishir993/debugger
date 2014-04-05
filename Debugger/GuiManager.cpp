@@ -1,5 +1,6 @@
 
 #include "Inc\GuiManager.h"
+#include "Inc\WndProc.h"
 
 extern PLOGGER pstLogger;
 
@@ -142,7 +143,7 @@ BOOL CALLBACK fGetProcIdDP(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam
     static DWORD nProcIDs;
     static DWORD nListItems;
 
-    static DWORD *pdwProcessIdToReturn = NULL;
+    static PDBG_SESSIONSTART pstSessionInfo = NULL;
     
     static int iSelectedListItem;
     LPNMLISTVIEW lpNMListView = NULL;
@@ -159,7 +160,10 @@ BOOL CALLBACK fGetProcIdDP(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam
             
             // We should get the address where to store the PID chosen by user, from main window
             ASSERT(lParam);
-            pdwProcessIdToReturn = (DWORD*)lParam;
+            pstSessionInfo = (PDBG_SESSIONSTART)lParam;
+
+            // Set flag to indicate that we will debug an active process
+            pstSessionInfo->fDebuggingActiveProcess = TRUE;
 
 			fChlGuiCenterWindow(hDlg);
 
@@ -218,11 +222,11 @@ BOOL CALLBACK fGetProcIdDP(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam
                         if(!SendDlgItemMessage(hDlg, IDC_LIST_PROCIDS, LVM_GETITEM, 0, (LPARAM)&lvSelItem))
                         {
                             MessageBox(hDlg, L"Error retrieving selected process's PID", L"Error", MB_OK);
-                            *pdwProcessIdToReturn = 0;
+                            pstSessionInfo->dwTargetPID = 0;
                         }
                         else
                         {
-                            *pdwProcessIdToReturn = _wtoi(lvSelItem.pszText);
+                            pstSessionInfo->dwTargetPID = _wtoi(lvSelItem.pszText);
                         }
 
                         SendMessage(hDlg, WM_CLOSE, 0, 0);
@@ -336,7 +340,7 @@ static BOOL fDisplayActiveProcesses(HWND hProcIDList, DWORD **paProcIDs, DWORD *
     {
         if(!fChlPsGetProcNameFromID((*paProcIDs)[index], wsProcName, _countof(wsProcName)))
         {
-            dbgwprintf(L"Error reading proc name for %d %d", (*paProcIDs)[index], GetLastError());
+            dbgwprintf(L"Error reading proc name for %d %d\n", (*paProcIDs)[index], GetLastError());
             logwarn(pstLogger, L"Error reading proc name for %d %d", (*paProcIDs)[index], GetLastError());
             continue;
         }
@@ -399,3 +403,129 @@ static BOOL fDisplayActiveProcesses(HWND hProcIDList, DWORD **paProcIDs, DWORD *
     return !fErrorInDisplaying;
 
 }// fDisplayActiveProcesses()
+
+// fGetNewProgramDP()
+//
+BOOL CALLBACK fGetNewProgramDP(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    static PDBG_SESSIONSTART pstSessionInfo = NULL;
+    static WCHAR szFilters[] = L"Executables\0*.exe\0\0";
+
+    HANDLE hFile = NULL;
+    WCHAR szTargetPath[SLEN_MAXPATH];
+
+    DWORD dwError = ERROR_SUCCESS;
+
+    switch(message)
+	{
+		case WM_INITDIALOG:
+		{   
+            // We should, from main window, get the address where to store the path of target chosen by user
+            ASSERT(lParam);
+            pstSessionInfo = (PDBG_SESSIONSTART)lParam;
+            ZeroMemory(pstSessionInfo, sizeof(DBG_SESSIONSTART));
+
+			fChlGuiCenterWindow(hDlg);
+
+            return TRUE;
+        }
+
+        case WM_COMMAND:
+		{
+			// handle command sent from child window controls
+			switch(LOWORD(wParam))
+			{
+                case IDC_NP_BROWSE:
+                {
+                    // Get the path to the target program to be debugged
+                    if(!fGuiGetOpenFilename(hDlg, szFilters, szTargetPath, sizeof(szTargetPath), &dwError))
+                    {
+                        vWriteLog(pstLogger, L"%s(): fGuiGetOpenFilename failed: %u", __FUNCTIONW__, dwError);
+                        return 0;
+                    }
+
+                    // Check if the image file exists and can be read
+                    hFile = CreateFile(szTargetPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+                    if(hFile == INVALID_HANDLE_VALUE)
+                    {
+                        MessageBox(hDlg, L"Chosen target path not found or access denied. See log file.", L"Error", MB_ICONEXCLAMATION);
+
+                        SET_ERRORCODE(dwError);
+                        vWriteLog(pstLogger, L"%s(): CreateFile failed: %u", __FUNCTIONW__, dwError);
+                        return 0;
+                    }
+                    CloseHandle(hFile);
+
+                    // Insert path into the edit control
+                    SendDlgItemMessage(hDlg, IDC_NP_PROGRAMPATH, WM_SETTEXT, 0, (LPARAM)szTargetPath);
+
+                    return TRUE;
+                }
+                
+                case IDC_NP_OK:
+                {
+                    // Get the text from edit control
+                    int nLen = SendDlgItemMessage(hDlg, IDC_NP_PROGRAMPATH, WM_GETTEXTLENGTH, 0, NULL);
+
+                    if(nLen < 0)
+                    {
+                        // TODO: show error. log it.
+
+                        // Close the dialog
+                        ZeroMemory(pstSessionInfo, sizeof(DBG_SESSIONSTART));
+                        SendMessage(hDlg, WM_CLOSE, 0, 0);
+                    }
+                    else if(nLen == 0)
+                    {
+                        MessageBox(hDlg, L"Specify path or click Cancel", L"Info", MB_ICONEXCLAMATION);
+                    }
+                    else if(nLen > SLEN_MAXPATH - 1)
+                    {
+                        MessageBox(hDlg, L"Path too long!", L"Error", MB_ICONEXCLAMATION);
+                        logwarn(pstLogger, L"%s(): Target path length too long %d/%d", __FUNCTIONW__, nLen, SLEN_MAXPATH-1);
+                    }
+                    else
+                    {
+                        // Returns number of chars copied
+                        nLen = SendDlgItemMessage(hDlg, IDC_NP_PROGRAMPATH, WM_GETTEXT, _countof(pstSessionInfo->szTargetPath), (LPARAM)pstSessionInfo->szTargetPath);
+                        if(nLen <= 0)
+                        {
+                            MessageBox(hDlg, L"Error reading specified target path. See log file.", L"Error", MB_ICONERROR);
+                            logwarn(pstLogger, L"%s(): WM_GETTEXT failed %u", __FUNCTIONW__, GetLastError());
+                        }
+                        else
+                        {
+                            // We have copied the path, now get state of the checkbox
+                            if(SendDlgItemMessage(hDlg, IDC_NP_BREAKMAIN, BM_GETCHECK, 0, 0) == BST_CHECKED)
+                            {
+                                pstSessionInfo->fBreakAtMain = TRUE;
+                            }
+
+                            SendMessage(hDlg, WM_CLOSE, 0, 0);
+                        }
+                    }
+                    return TRUE;
+                }
+
+                case IDC_NP_CANCEL:
+                {
+                    ZeroMemory(pstSessionInfo, sizeof(DBG_SESSIONSTART));
+                    SendMessage(hDlg, WM_CLOSE, 0, 0);
+					return TRUE;
+                }
+            }
+
+            break;
+        
+        }// WM_COMMAND
+
+        case WM_CLOSE:
+		{
+			EndDialog(hDlg, 0);
+			return TRUE;
+		}
+
+    }
+
+    return FALSE;
+}

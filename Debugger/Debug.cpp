@@ -63,8 +63,7 @@ DWORD WINAPI dwDebugThreadEntry(LPVOID lpvArgs)
 
     PTARGETINFO pstTargetInfo = NULL;
 
-    BOOL fProcessingGuiMessages;
-    BOOL fProcessingDebugEventLoop;
+    BOOL fContinueProcessing;
 
     vWriteLog(pstLogger, L"%s(): Entry", __FUNCTIONW__);
 
@@ -105,23 +104,23 @@ DWORD WINAPI dwDebugThreadEntry(LPVOID lpvArgs)
     vSetMenuItemsState(pstTargetInfo);
 
     // Start from-gui message loop and debug event loop
-    fProcessingGuiMessages = fProcessingDebugEventLoop = TRUE;
+    fContinueProcessing = TRUE;
 
     // Execute loop while we have either GUI messages or debug event loop to process
-    while(fProcessingGuiMessages || fProcessingDebugEventLoop)
+    while(fContinueProcessing)
     {
-        if(fProcessingGuiMessages && !fProcessGuiMessage(pstTargetInfo))
-        {
-            fProcessingGuiMessages = FALSE;
-        }
+        fContinueProcessing = fProcessGuiMessage(pstTargetInfo);
 
-        if(fProcessingDebugEventLoop && !fProcessDebugEventLoop(pstTargetInfo))
+        if(fContinueProcessing)
         {
-            fProcessingDebugEventLoop = FALSE;
+            fContinueProcessing = fProcessDebugEventLoop(pstTargetInfo);
         }
     }
 
     vWriteLog(pstLogger, L"%s(): Exiting with ERROR_SUCCESS", __FUNCTIONW__);
+
+    // TODO: notify Gui thread and update UI
+
     vOnThisThreadExit(&pstTargetInfo);
     return ERROR_SUCCESS;
 
@@ -324,6 +323,9 @@ static void vOnThisThreadExit(PTARGETINFO *ppstTargetInfo)
 
     PTARGETINFO plocal = *ppstTargetInfo;
 
+    // Notify Gui thread of exit
+    SendMessage(plocal->pstDebugInfoFromGui->hMainWindow, DG_SESS_TERM, (WPARAM)plocal->pstDebugInfoFromGui->stTabPageInfo.iTabIndex, (LPARAM)NULL);
+
     // free threads table
     if(plocal->phtThreads && !fChlDsDestroyHT(plocal->phtThreads))
     {
@@ -345,13 +347,16 @@ static void vOnThisThreadExit(PTARGETINFO *ppstTargetInfo)
     return;
 }
 
+// Process any messages posted to this thread by the Gui thread
+// If this function returns FALSE, then it means that this Debug thread
+// must exit. Right now, FALSE is returned only when detaching from target
 static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo)
 {
     ASSERT(pstTargetInfo);
 
     MSG msg;
 
-    while( PeekMessage(&msg, (HWND)-1, CUSTOM_EVENT_START, CUSTOM_EVENT_END, PM_REMOVE) )
+    while( PeekMessage(&msg, (HWND)-1, CUSTOM_GDEVENT_START, CUSTOM_GDEVENT_END, PM_REMOVE) )
     {
         switch(msg.message)
         {
@@ -418,6 +423,35 @@ static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo)
                 break;
             }
 
+            case GD_SESS_TERM:
+            {
+                if(!TerminateProcess(pstTargetInfo->stProcessInfo.hProcess, EXITCODE_TARGET_TERM))
+                {
+                    MessageBox(pstTargetInfo->pstDebugInfoFromGui->hMainWindow, L"Cannot terminate target. See log file.", L"Error", MB_ICONERROR);
+                    logerror(pstLogger, L"%s(): TerminateProcess() failed %u", GetLastError());
+                }
+                break;
+            }
+
+            case GD_SESS_DETACH:
+            {
+                if(!DebugActiveProcessStop(pstTargetInfo->dwPID))
+                {
+                    MessageBox(pstTargetInfo->pstDebugInfoFromGui->hMainWindow, L"Cannot detach from target. See log file.", L"Error", MB_ICONERROR);
+                    logerror(pstLogger, L"%s(): DebugActiveProcessStop() failed %u", GetLastError());
+                }
+                else
+                {
+                    goto gui_exit;
+                }
+                break;
+            }
+
+            case GD_SESS_DUMPTERM:
+            {
+                break;
+            }
+
             default:
             {
                 ASSERT(FALSE);
@@ -427,6 +461,9 @@ static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo)
     }
     
     return TRUE;
+
+gui_exit:
+    return FALSE;
 }
 
 static BOOL fProcessDebugEventLoop(PTARGETINFO pstTargetInfo)

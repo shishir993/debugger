@@ -12,6 +12,12 @@
 #include "UICreator.h"
 #include "CHelpLibDll.h"
 
+typedef struct _DbgSessionStart {
+    BOOL fDebuggingActiveProcess;
+    BOOL fBreakAtMain;
+    DWORD dwTargetPID;
+    WCHAR szTargetPath[SLEN_MAXPATH];
+}DBG_SESSIONSTART, *PDBG_SESSIONSTART;
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 
