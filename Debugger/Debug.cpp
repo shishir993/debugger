@@ -322,9 +322,21 @@ static void vOnThisThreadExit(PTARGETINFO *ppstTargetInfo)
     ASSERT(*ppstTargetInfo);
 
     PTARGETINFO plocal = *ppstTargetInfo;
+    PGUIDBGCOMM pstGuiComm = NULL;
+
+    DWORD dwError = ERROR_SUCCESS;
 
     // Notify Gui thread of exit
-    SendMessage(plocal->pstDebugInfoFromGui->hMainWindow, DG_SESS_TERM, (WPARAM)plocal->pstDebugInfoFromGui->stTabPageInfo.iTabIndex, (LPARAM)NULL);
+    if(!fChlMmAlloc((void**)&pstGuiComm, sizeof(GUIDBGCOMM), &dwError))
+    {
+        logerror(pstLogger, L"%s(): fChlMmAlloc() failed %u", dwError);
+    }
+    else
+    {
+        pstGuiComm->dwThreadID = GetCurrentThreadId();
+        memcpy(&pstGuiComm->stTabPageInfo, &plocal->pstDebugInfoFromGui->stTabPageInfo, sizeof(TABPAGEINFO));
+        SendMessage(plocal->pstDebugInfoFromGui->hMainWindow, DG_SESS_TERM, (WPARAM)plocal->pstDebugInfoFromGui->stTabPageInfo.iTabIndex, (LPARAM)pstGuiComm);
+    }
 
     // free threads table
     if(plocal->phtThreads && !fChlDsDestroyHT(plocal->phtThreads))

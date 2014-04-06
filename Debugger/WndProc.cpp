@@ -243,13 +243,21 @@ LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM l
         // ****************************** Messages from Debug thread ******************************
         case DG_SESS_TERM:
         {
+            PGUIDBGCOMM pstDbgComm = (PGUIDBGCOMM)lParam;
+
+            ASSERT(pstDbgComm);
+
+            logtrace(pstLogger, L"%s(): DG_SESS_TERM from thread %u", __FUNCTIONW__, pstDbgComm->dwThreadID);
             if(!fGuiRemTab((int)wParam, &dwError))
             {
                 logwarn(pstLogger, L"%s(): fGuiRemTab() failed to remove index %d %u", (int)wParam, dwError);
             }
 
             // Continue even if we failed to remove from hash table (next time we insert, it will simply get overwritten)
-            SendMessage(hMainTab, TCM_DELETEITEM, (int)wParam, (LPARAM)NULL);
+            vDeleteTabPage(hMainTab, &pstDbgComm->stTabPageInfo);
+
+            vChlMmFree((void**)&pstDbgComm);
+
             return 0;
         }
 

@@ -272,3 +272,22 @@ BOOL fInsertTabItem(HWND hTab, WCHAR *pszText, __out int *piNewIndex, __out DWOR
     }
     return TRUE;
 }
+
+void vDeleteTabPage(HWND hTab, PTABPAGEINFO pstTabPageInfo)
+{
+    ASSERT(ISVALID_HANDLE(hTab));
+    ASSERT(pstTabPageInfo);
+    ASSERT(pstTabPageInfo->iTabIndex >= 0);
+
+    // First, destroy all child windows
+    DestroyWindow(pstTabPageInfo->hEditDisass);
+    DestroyWindow(pstTabPageInfo->hListCallStack);
+    DestroyWindow(pstTabPageInfo->hListRegisters);
+    DestroyWindow(pstTabPageInfo->hListThreads);
+    DestroyWindow(pstTabPageInfo->hStaticCommand);
+    DestroyWindow(pstTabPageInfo->hEditCommand);
+    DestroyWindow(pstTabPageInfo->hTabBottom);
+
+    // Remove the tab item
+    SendMessage(hTab, TCM_DELETEITEM, (int)pstTabPageInfo->iTabIndex, (LPARAM)NULL);
+}

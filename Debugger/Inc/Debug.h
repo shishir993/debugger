@@ -20,6 +20,12 @@ typedef struct _DebugInfo {
     TABPAGEINFO stTabPageInfo;
 }DEBUGINFO, *PDEBUGINFO;
 
+typedef struct _GuiDbgComm {
+    DWORD dwThreadID;		    // threadID which is sending/receiving the message
+    TABPAGEINFO stTabPageInfo;	// tab index and handles to all tabitem children
+}GUIDBGCOMM, *PGUIDBGCOMM;
+
+
 DWORD WINAPI dwDebugThreadEntry(LPVOID lpvArgs);
 
 

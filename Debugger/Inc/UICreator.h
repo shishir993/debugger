@@ -18,5 +18,6 @@ typedef struct _TabPageInfo {
 
 BOOL fCreateMainTabControl(HWND hMainWnd, __out HWND *phTabControl, __out DWORD *pdwErrCode);
 BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *pdwErrCode);
+void vDeleteTabPage(HWND hTab, PTABPAGEINFO pstTabPageInfo);
 
 #endif // _UICREATOR_H
