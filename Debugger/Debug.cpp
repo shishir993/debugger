@@ -18,6 +18,14 @@ typedef struct _TargetInfo {
     DWORD dwMainThreadID;
     
     CREATE_PROCESS_DEBUG_INFO stProcessInfo;
+ 
+    HANDLE hFileMapObj;
+    HANDLE hFileMapView;
+
+    PIMAGE_NT_HEADERS pstNtHeaders;
+    DWORD dwCodeStart;
+    DWORD dwCodeSize;
+    DWORD dwCodeSecVirtAddr;
 
     CHL_HTABLE *phtDllsLoaded;
     CHL_HTABLE *phtThreads;
@@ -337,6 +345,11 @@ static void vOnThisThreadExit(PTARGETINFO *ppstTargetInfo)
         memcpy(&pstGuiComm->stTabPageInfo, &plocal->pstDebugInfoFromGui->stTabPageInfo, sizeof(TABPAGEINFO));
         SendMessage(plocal->pstDebugInfoFromGui->hMainWindow, DG_SESS_TERM, (WPARAM)plocal->pstDebugInfoFromGui->stTabPageInfo.iTabIndex, (LPARAM)pstGuiComm);
     }
+
+    // Close handles
+    UnmapViewOfFile(plocal->hFileMapView);
+    CloseHandle(plocal->hFileMapObj);
+    CloseHandle(plocal->stProcessInfo.hFile);
 
     // free threads table
     if(plocal->phtThreads && !fChlDsDestroyHT(plocal->phtThreads))
@@ -696,6 +709,30 @@ BOOL fOnCreateProcess(PTARGETINFO pstTargetInfo)
 
         // Save all info from CREATE_PROCESS_DEBUG_INFO for later use
         memcpy(&(pstTargetInfo->stProcessInfo), &(lpDebugEvent->u.CreateProcessInfo), sizeof(CREATE_PROCESS_DEBUG_INFO));
+
+        // Get some additional info about target process's image
+        if(!fChlGnCreateMemMapOfFile(lpDebugEvent->u.CreateProcessInfo.hFile, 0, &pstTargetInfo->hFileMapObj, &pstTargetInfo->hFileMapView))
+        {
+            logerror(pstLogger, L"%s(): fChlGnCreateMemMapOfFile() failed %u", __FUNCTIONW__, GetLastError());
+            goto error_return;
+        }
+
+        if(!fChlPsGetNtHeaders(pstTargetInfo->hFileMapView, &pstTargetInfo->pstNtHeaders))
+        {
+            logerror(pstLogger, L"%s(): fChlPsGetNtHeaders() failed %u", __FUNCTIONW__, GetLastError());
+            goto error_return;
+        }
+
+        if(!fChlPsGetPtrToCode(
+                (DWORD)pstTargetInfo->hFileMapView, 
+                pstTargetInfo->pstNtHeaders, 
+                &pstTargetInfo->dwCodeStart, 
+                &pstTargetInfo->dwCodeSize, 
+                &pstTargetInfo->dwCodeSecVirtAddr))
+        {
+            logerror(pstLogger, L"%s(): fChlPsGetPtrToCode() failed %u", __FUNCTIONW__, GetLastError());
+            goto error_return;
+        }
     }
 
     ++(pstTargetInfo->nCurThreads);
@@ -703,9 +740,14 @@ BOOL fOnCreateProcess(PTARGETINFO pstTargetInfo)
     ++(pstTargetInfo->nTotalProcesses);
 
     // Close handle to the image file, we do not need here... yet
-    CloseHandle(lpDebugEvent->u.CreateProcessInfo.hFile);
+    // CloseHandle(lpDebugEvent->u.CreateProcessInfo.hFile);
+
+    // Close handle when thread exits
 
     return TRUE;
+
+error_return:
+    return FALSE;
 }
 
 BOOL fOnExitThread(PTARGETINFO pstTargetInfo)

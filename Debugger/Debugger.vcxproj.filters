@@ -16,6 +16,12 @@
     <Filter Include="Libs">
       <UniqueIdentifier>{79ad6207-93cc-4ac7-a504-441fca4b2536}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Dasm">
+      <UniqueIdentifier>{144a647b-00a8-4705-9a44-15b370cb2dbf}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Dasm\Header Files">
+      <UniqueIdentifier>{9ccf8d90-3882-4189-a103-4d16307fba65}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="WinMain.cpp">
@@ -53,6 +59,15 @@
     </ClCompile>
     <ClCompile Include="Breakpoint.cpp">
       <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Dasm\Dasm.cpp">
+      <Filter>Dasm</Filter>
+    </ClCompile>
+    <ClCompile Include="Dasm\DasmEngine.cpp">
+      <Filter>Dasm</Filter>
+    </ClCompile>
+    <ClCompile Include="Dasm\Utils.cpp">
+      <Filter>Dasm</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -112,6 +127,18 @@
     </ClInclude>
     <ClInclude Include="Inc\Breakpoint.h">
       <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Dasm\Dasm.h">
+      <Filter>Dasm\Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Dasm\DasmEngine.h">
+      <Filter>Dasm\Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Dasm\DasmInc.h">
+      <Filter>Dasm\Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Dasm\Utils.h">
+      <Filter>Dasm\Header Files</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
