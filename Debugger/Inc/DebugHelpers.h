@@ -4,6 +4,7 @@
 
 #include "Common.h"
 #include "CHelpLibDll.h"
+#include "DebugCommon.h"
 
 BOOL fGetExceptionName(DWORD excode, __out WCHAR *pwsBuffer, int bufSize);
 
@@ -14,5 +15,10 @@ BOOL fDeleteThreadsTable(CHL_HTABLE *phtThreads);
 BOOL fSuspendAllThreads(CHL_HTABLE *phtThreads);
 BOOL fResumeAllThreads(CHL_HTABLE *phtThreads);
 BOOL fIsNtDllLoaded(CHL_HTABLE *phtDllTable, __out DWORD *pdwBaseAddress);
+
+BOOL fBreakAtEntryPoint(PTARGETINFO pstTargetInfo);
+BOOL fHandleExceptionBreakpoint(PTARGETINFO pstTargetInfo, __out PDWORD pdwContinueStatus);
+
+void vSetContinueStatusFromUser(DWORD dwExceptionCode, DWORD dwExceptionAddress, BOOL fFirstChance, PDWORD pdwContinueStatus);
 
 #endif // _DEBUGTHREADHELPERS_H

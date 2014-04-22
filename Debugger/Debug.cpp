@@ -2,45 +2,8 @@
 #include "Inc\Debug.h"
 #include "Inc\DebugHelpers.h"
 
-#define STATE_DBG_INVALID       0
-#define STATE_DBG_RUNNING       1
-#define STATE_DBG_DEBUGGING     2
-
 extern PLOGGER pstLogger;
 extern HINSTANCE g_hMainInstance;
-
-typedef struct _TargetInfo {
-    PDEBUGINFO pstDebugInfoFromGui;
-
-    BOOL fCreateProcessEventRecvd;
-
-    DWORD dwPID;
-    DWORD dwMainThreadID;
-    
-    CREATE_PROCESS_DEBUG_INFO stProcessInfo;
- 
-    HANDLE hFileMapObj;
-    HANDLE hFileMapView;
-
-    PIMAGE_NT_HEADERS pstNtHeaders;
-    DWORD dwCodeStart;
-    DWORD dwCodeSize;
-    DWORD dwCodeSecVirtAddr;
-
-    CHL_HTABLE *phtDllsLoaded;
-    CHL_HTABLE *phtThreads;
-    
-    int nCurThreads;
-    int nTotalProcesses;
-    int nTotalThreads;
-
-    int nCurDllsLoaded;
-    int nTotalDllsLoaded;
-
-    int iDebugState;
-
-    LPDEBUG_EVENT lpDebugEvent;
-}TARGETINFO, *PTARGETINFO;
 
 // ** File local functions **
 static BOOL fInitialSyncWithGuiThread(const WCHAR *pszSyncEventName);
@@ -108,7 +71,7 @@ DWORD WINAPI dwDebugThreadEntry(LPVOID lpvArgs)
         }
     }
 
-    pstTargetInfo->iDebugState = STATE_DBG_RUNNING;
+    pstTargetInfo->iDebugState = DSTATE_RUNNING;
     vSetMenuItemsState(pstTargetInfo);
 
     // Start from-gui message loop and debug event loop
@@ -119,7 +82,7 @@ DWORD WINAPI dwDebugThreadEntry(LPVOID lpvArgs)
     {
         fContinueProcessing = fProcessGuiMessage(pstTargetInfo);
 
-        if(fContinueProcessing)
+        if(fContinueProcessing && pstTargetInfo->iDebugState == DSTATE_RUNNING)
         {
             fContinueProcessing = fProcessDebugEventLoop(pstTargetInfo);
         }
@@ -212,9 +175,30 @@ static BOOL fDebugNewProgram(PTARGETINFO pstTargetInfo)
         goto error_return;
     }
 
+    // Create breakpoints list
+    if(!fBpInitialize(&pstTargetInfo->pListBreakpoint))
+    {
+        logerror(pstLogger, L"fBpInitialize() failed: %u", GetLastError());
+        goto error_return;
+    }
+
     return TRUE;
 
-    error_return:
+error_return:
+    if(pstTargetInfo->phtDllsLoaded)
+    {
+        fChlDsDestroyHT(pstTargetInfo->phtDllsLoaded);
+    }
+
+    if(pstTargetInfo->phtThreads)
+    {
+        fChlDsDestroyHT(pstTargetInfo->phtThreads);
+    }
+
+    if(pstTargetInfo->pListBreakpoint)
+    {
+        fBpTerminate(pstTargetInfo->pListBreakpoint);
+    }
     return FALSE;
 }
 
@@ -246,6 +230,13 @@ static BOOL fDebugActiveProcess(PTARGETINFO pstTargetInfo)
     if(!fChlDsCreateHT(&pstTargetInfo->phtDllsLoaded, 500, HT_KEY_DWORD, HT_VAL_STR, TRUE))
     {
         logerror(pstLogger, L"fChlDsCreateHT() failed");
+        goto error_return;
+    }
+
+    // Create breakpoints list
+    if(!fBpInitialize(&pstTargetInfo->pListBreakpoint))
+    {
+        logerror(pstLogger, L"fBpInitialize() failed: %u", GetLastError());
         goto error_return;
     }
 
@@ -318,7 +309,22 @@ static BOOL fDebugActiveProcess(PTARGETINFO pstTargetInfo)
     // Unreachable code
     return TRUE;
 
-    error_return:
+error_return:
+    if(pstTargetInfo->phtDllsLoaded)
+    {
+        fChlDsDestroyHT(pstTargetInfo->phtDllsLoaded);
+    }
+
+    if(pstTargetInfo->phtThreads)
+    {
+        fChlDsDestroyHT(pstTargetInfo->phtThreads);
+    }
+
+    if(pstTargetInfo->pListBreakpoint)
+    {
+        fBpTerminate(pstTargetInfo->pListBreakpoint);
+    }
+
     return FALSE;
 }
 
@@ -519,7 +525,36 @@ static BOOL fProcessDebugEventLoop(PTARGETINFO pstTargetInfo)
                 {
                     DWORD dwContinueStatus;
 
+                    HANDLE hCurThread = NULL;
+                    CONTEXT stThreadContext;
+
+                    if(!fGetThreadHandle(pstTargetInfo->phtThreads, de.dwThreadId, &hCurThread))
+                    {
+                        logerror(pstLogger, L"%s(): Cannot get thread handle for thread %u", __FUNCTIONW__, de.dwThreadId);
+                    }
+                    else
+                    {
+                        ZeroMemory(&stThreadContext, sizeof(CONTEXT));
+
+                        stThreadContext.ContextFlags = CONTEXT_FULL; // this is CONTEXT_INTEGER | CONTEXT_CONTROL | CONTEXT_SEGMENTS;
+                        if(!GetThreadContext(hCurThread, &stThreadContext))
+                        {
+                            logerror(pstLogger, L"%s(): GetThreadContext failed %u", __FUNCTIONW__, GetLastError());
+                        }
+                        else
+                        {
+                            
+                        }
+                    }
+
                     fOnException(pstTargetInfo, &dwContinueStatus);
+
+                    ASSERT(dwContinueStatus == DBG_CONTINUE || dwContinueStatus == DBG_CONT_ABORT ||
+                        dwContinueStatus == DBG_CONT_BREAK || dwContinueStatus == DBG_EXCEPTION_NOT_HANDLED ||
+                        dwContinueStatus == DBG_EXCEPTION_HANDLED);
+
+                    // TODO: Handle different values of dwContinueStatus
+
                     ContinueDebugEvent(de.dwProcessId, de.dwThreadId, dwContinueStatus);
                 
                     return TRUE;
@@ -599,8 +634,11 @@ BOOL fOnException(PTARGETINFO pstTargetInfo, __out DWORD *pdwContinueStatus)
     LPDEBUG_EVENT lpDebugEvent = pstTargetInfo->lpDebugEvent;
 
     DWORD dwExCode = lpDebugEvent->u.Exception.ExceptionRecord.ExceptionCode;
+
+#if 0
     WCHAR wsExString[SLEN_EXCEPTION_NAME];
     WCHAR wsExceptionMessage[SLEN_COMMON64];
+
 
     wprintf(
         L"Exception 0x%08X at 0x%08x\n", 
@@ -637,6 +675,34 @@ BOOL fOnException(PTARGETINFO pstTargetInfo, __out DWORD *pdwContinueStatus)
     }
     
     IFPTR_SETVAL(pdwContinueStatus, DBG_EXCEPTION_NOT_HANDLED);
+#else
+    
+    switch(dwExCode)
+    {
+        case EXCEPTION_BREAKPOINT:
+        {
+            fHandleExceptionBreakpoint(pstTargetInfo, pdwContinueStatus);
+            break;
+        }
+
+        case EXCEPTION_SINGLE_STEP:
+        {
+            break;
+        }
+
+        default:
+        {
+            vSetContinueStatusFromUser(
+                lpDebugEvent->u.Exception.ExceptionRecord.ExceptionCode, 
+                (DWORD)lpDebugEvent->u.Exception.ExceptionRecord.ExceptionAddress,
+                lpDebugEvent->u.Exception.dwFirstChance,
+                pdwContinueStatus);
+            break;
+        }
+    }
+
+#endif
+
     return TRUE;
 }
 
@@ -907,13 +973,13 @@ static void vSetMenuItemsState(PTARGETINFO pstTargetInfo)
 
     switch(pstTargetInfo->iDebugState)
     {
-        case STATE_DBG_RUNNING:
+        case DSTATE_RUNNING:
         {
             vMiDebuggerRunning(pstTargetInfo->pstDebugInfoFromGui->hMainMenu);
             break;
         }
 
-        case STATE_DBG_DEBUGGING:
+        case DSTATE_DEBUGGING:
         {
             vMiDebuggerDebugging(pstTargetInfo->pstDebugInfoFromGui->hMainMenu);
             break;

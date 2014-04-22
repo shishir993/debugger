@@ -114,6 +114,7 @@
     <ClInclude Include="Inc\Breakpoint.h" />
     <ClInclude Include="Inc\CustomEvents.h" />
     <ClInclude Include="Inc\Debug.h" />
+    <ClInclude Include="Inc\DebugCommon.h" />
     <ClInclude Include="Inc\DebugHelpers.h" />
     <ClInclude Include="Inc\GuiManager.h" />
     <ClInclude Include="Inc\MenuItems.h" />

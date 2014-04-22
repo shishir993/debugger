@@ -1,5 +1,6 @@
 
 #include "Inc\DebugHelpers.h"
+#include "Inc\Breakpoint.h"
 
 extern PLOGGER pstLogger;
 
@@ -212,4 +213,147 @@ BOOL fIsNtDllLoaded(CHL_HTABLE *phtDllTable, __out DWORD *pdwBaseAddress)
 
     IFPTR_SETVAL(pdwBaseAddress, 0);
     return FALSE;
+}
+
+BOOL fBreakAtEntryPoint(PTARGETINFO pstTargetInfo)
+{
+    ASSERT(pstTargetInfo && pstTargetInfo->pListBreakpoint);
+
+    BPINFO stBpInfo;
+
+    stBpInfo.iBpType = BPTYPE_USERSINGLEHIT | BPTYPE_ASMLEVEL;
+    stBpInfo.dwTargetAddr = (DWORD)pstTargetInfo->stProcessInfo.lpStartAddress;
+
+    // TODO: take the return breakpoint ID value
+    return fBpInsert(pstTargetInfo->pListBreakpoint, &stBpInfo, pstTargetInfo, NULL);
+}
+
+BOOL fHandleExceptionBreakpoint(PTARGETINFO pstTargetInfo, __out PDWORD pdwContinueStatus)
+{
+    ASSERT(pstTargetInfo && pstTargetInfo->lpDebugEvent);
+    ASSERT(pdwContinueStatus);
+
+    BPINFO stBpInfo;
+
+    ZeroMemory(&stBpInfo, sizeof(BPINFO));
+
+    // Is it a USER or single-hit?
+    stBpInfo.dwTargetAddr = (DWORD)pstTargetInfo->lpDebugEvent->u.Exception.ExceptionRecord.ExceptionAddress;
+    stBpInfo.iBpType = BPTYPE_ASMLEVEL;
+    if(!fBpFind(pstTargetInfo->pListBreakpoint, &stBpInfo, 0))
+    {
+        logwarn(pstLogger, L"%s(): fBpFind() failed %u", __FUNCTIONW__, GetLastError());
+        
+        // Ask user what to do and get the pdwContinueStatus parameter set
+        vSetContinueStatusFromUser(
+            pstTargetInfo->lpDebugEvent->u.Exception.ExceptionRecord.ExceptionCode,
+            (DWORD)pstTargetInfo->lpDebugEvent->u.Exception.ExceptionRecord.ExceptionAddress,
+            pstTargetInfo->lpDebugEvent->u.Exception.dwFirstChance,
+            pdwContinueStatus);
+
+        return TRUE;
+    }
+
+    // Found the breakpoint info
+    if(stBpInfo.iBpType & BPTYPE_USERSINGLEHIT || stBpInfo.iBpType & BPTYPE_USERMULTIHIT)
+    {
+        memcpy(&pstTargetInfo->stPrevBpInfo, &stBpInfo, sizeof(BPINFO));
+        if(pstTargetInfo->iDebugState != DSTATE_SINGLESTEPPING)
+        {
+            pstTargetInfo->iDebugState = DSTATE_MODBREAKPOINT;
+        }
+    }
+    else if(stBpInfo.iBpType & BPTYPE_DEBUGGERSINGLEHIT || stBpInfo.iBpType & BPTYPE_DEBUGGERMULTIHIT)
+    {
+        // todo:
+    }
+    else
+    {
+        // should never happen
+        ASSERT(FALSE);
+    }
+
+    *pdwContinueStatus = DBG_CONTINUE;
+
+    return TRUE;
+}
+
+void vSetContinueStatusFromUser(DWORD dwExceptionCode, DWORD dwExceptionAddress, BOOL fFirstChance, PDWORD pdwContinueStatus)
+{
+    ASSERT(dwExceptionCode > 0 && dwExceptionAddress > 0);
+    ASSERT(pdwContinueStatus);
+
+    WCHAR szExString[SLEN_EXCEPTION_NAME];
+    WCHAR szExceptionMessage[SLEN_COMMON128];
+
+    int iUserChoice;
+
+    // Construct the string to show to user
+    if(!fGetExceptionName(dwExceptionCode, szExString, _countof(szExString)))
+    {
+        logwarn(pstLogger, L"Could not get exception name for exception code %x", dwExceptionCode);
+
+        swprintf_s(szExceptionMessage, 
+                _countof(szExceptionMessage), 
+                L"Unknown Exception(0x%08x) at: 0x%08x\r\nPress Retry to Break and Debug", 
+                dwExceptionCode, 
+                dwExceptionAddress);
+
+    }
+    else
+    {
+        if(fFirstChance)
+        {
+            swprintf_s(
+                szExceptionMessage, 
+                _countof(szExceptionMessage), 
+                L"%s Exception(0x%08x)(FirstChance) at: 0x%08x\r\n\nPress Retry to Break and Debug the Application", 
+                szExString, 
+                dwExceptionCode,
+                dwExceptionAddress);
+        }
+        else
+        {
+            swprintf_s(
+                szExceptionMessage, 
+                _countof(szExceptionMessage), 
+                L"%s Exception(0x%08x) at: 0x%08x\r\n\nPress Retry to Break and Debug the Application", 
+                szExString,
+                dwExceptionCode, 
+                dwExceptionAddress);
+        }
+    }
+
+    iUserChoice = MessageBox(NULL, szExceptionMessage, L"Exception hit in target", MB_ABORTRETRYIGNORE|MB_ICONERROR);
+    switch(iUserChoice)
+    {
+        case IDABORT:
+        {   
+            // User wants to abort target process immediately
+            *pdwContinueStatus = DBG_CONT_ABORT;
+            break;
+        }
+
+        case IDRETRY:
+        {
+            // User wants to break and enter debugging mode
+            *pdwContinueStatus = DBG_CONT_BREAK;
+            break;
+        }
+
+        case IDIGNORE:
+        {
+            *pdwContinueStatus = DBG_CONTINUE;
+            break;
+        }
+
+        default:
+        {
+            // Must never happen
+            ASSERT(FALSE);
+            break;
+        }
+    }// switch(userChoice)
+
+    return;
 }

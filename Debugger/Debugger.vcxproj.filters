@@ -140,6 +140,9 @@
     <ClInclude Include="Dasm\Utils.h">
       <Filter>Dasm\Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Inc\DebugCommon.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="Res\Debugger.rc">
