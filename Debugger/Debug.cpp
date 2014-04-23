@@ -51,7 +51,7 @@ DWORD WINAPI dwDebugThreadEntry(LPVOID lpvArgs)
     if(!fInitialSyncWithGuiThread(PDEBUGINFO(lpvArgs)->szInitSyncEvtName))
     {
         dwErrCode = GetLastError();
-        logerror(pstLogger, L"%s(): Could not sync with Gui thread: %u", dwErrCode);
+        logerror(pstLogger, L"%s(): Could not sync with Gui thread: %u", __FUNCTIONW__, dwErrCode);
         goto error_return;
     }
 
@@ -82,15 +82,32 @@ DWORD WINAPI dwDebugThreadEntry(LPVOID lpvArgs)
     {
         fContinueProcessing = fProcessGuiMessage(pstTargetInfo);
 
-        if(fContinueProcessing && pstTargetInfo->iDebugState == DSTATE_RUNNING)
+        // Decide whether to run the debug event loop based on value of iDebugState
+        switch(pstTargetInfo->iDebugState)
         {
-            fContinueProcessing = fProcessDebugEventLoop(pstTargetInfo);
+            case DSTATE_INVALID:
+            {
+                ASSERT(FALSE);
+            }
+            // Fall through
+            case DSTATE_DEBUGGING:
+            case DSTATE_SINGLESTEP_BEFORE:
+            case DSTATE_BREAKPOINTWAIT:
+            {
+                continue;
+            }
+
+            default:
+            {
+                fContinueProcessing = fProcessDebugEventLoop(pstTargetInfo);
+            }
         }
     }
 
     vWriteLog(pstLogger, L"%s(): Exiting with ERROR_SUCCESS", __FUNCTIONW__);
 
-    // TODO: notify Gui thread and update UI
+    pstTargetInfo->iDebugState = DSTATE_INVALID;
+    vSetMenuItemsState(pstTargetInfo);
 
     vOnThisThreadExit(&pstTargetInfo);
     return ERROR_SUCCESS;
@@ -343,7 +360,7 @@ static void vOnThisThreadExit(PTARGETINFO *ppstTargetInfo)
     // Notify Gui thread of exit
     if(!fChlMmAlloc((void**)&pstGuiComm, sizeof(GUIDBGCOMM), &dwError))
     {
-        logerror(pstLogger, L"%s(): fChlMmAlloc() failed %u", dwError);
+        logerror(pstLogger, L"%s(): fChlMmAlloc() failed %u", __FUNCTIONW__, dwError);
     }
     else
     {
@@ -405,6 +422,28 @@ static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo)
 
             case GD_MENU_CONTINUE:
             {
+                // Remove breakpoint
+                if(!fBpRemove(pstTargetInfo->pListBreakpoint, &pstTargetInfo->stPrevBpInfo.stBpInfo, pstTargetInfo))
+                {
+                    dbgwprintf(L"()%s: Failed to remove breakpoint", __FUNCTIONW__);
+                    logerror(pstLogger, L"()%s: Failed to remove breakpoint", __FUNCTIONW__);
+                    break;
+                }
+
+                // Set EIP to previous instruction
+                fDecrementInstPointer(pstTargetInfo->phtThreads, pstTargetInfo->stPrevBpInfo.dwThreadId);
+
+                // Change debugger state
+                pstTargetInfo->iPrevDebugState = pstTargetInfo->iDebugState;
+                pstTargetInfo->iDebugState = DSTATE_RUNNING;
+
+                // Continue debug event
+                if(!ContinueDebugEvent(pstTargetInfo->dwPID, pstTargetInfo->stPrevBpInfo.dwThreadId, DBG_CONTINUE))
+                {
+                    dbgwprintf(L"%s(): ContinueDebugEvent failed %u\n", __FUNCTIONW__, GetLastError());
+                    logerror(pstLogger, L"%s(): ContinueDebugEvent failed %u\n", __FUNCTIONW__, GetLastError());
+                }
+
                 break;
             }
 
@@ -459,7 +498,7 @@ static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo)
                 if(!TerminateProcess(pstTargetInfo->stProcessInfo.hProcess, EXITCODE_TARGET_TERM))
                 {
                     MessageBox(pstTargetInfo->pstDebugInfoFromGui->hMainWindow, L"Cannot terminate target. See log file.", L"Error", MB_ICONERROR);
-                    logerror(pstLogger, L"%s(): TerminateProcess() failed %u", GetLastError());
+                    logerror(pstLogger, L"%s(): TerminateProcess() failed %u", __FUNCTIONW__, GetLastError());
                 }
                 break;
             }
@@ -469,7 +508,7 @@ static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo)
                 if(!DebugActiveProcessStop(pstTargetInfo->dwPID))
                 {
                     MessageBox(pstTargetInfo->pstDebugInfoFromGui->hMainWindow, L"Cannot detach from target. See log file.", L"Error", MB_ICONERROR);
-                    logerror(pstLogger, L"%s(): DebugActiveProcessStop() failed %u", GetLastError());
+                    logerror(pstLogger, L"%s(): DebugActiveProcessStop() failed %u", __FUNCTIONW__, GetLastError());
                 }
                 else
                 {
@@ -528,34 +567,69 @@ static BOOL fProcessDebugEventLoop(PTARGETINFO pstTargetInfo)
                     HANDLE hCurThread = NULL;
                     CONTEXT stThreadContext;
 
-                    if(!fGetThreadHandle(pstTargetInfo->phtThreads, de.dwThreadId, &hCurThread))
-                    {
-                        logerror(pstLogger, L"%s(): Cannot get thread handle for thread %u", __FUNCTIONW__, de.dwThreadId);
-                    }
-                    else
-                    {
-                        ZeroMemory(&stThreadContext, sizeof(CONTEXT));
+                    //if(!fGetThreadHandle(pstTargetInfo->phtThreads, de.dwThreadId, &hCurThread))
+                    //{
+                    //    logerror(pstLogger, L"%s(): Cannot get thread handle for thread %u", __FUNCTIONW__, de.dwThreadId);
+                    //}
+                    //else
+                    //{
+                    //    ZeroMemory(&stThreadContext, sizeof(CONTEXT));
 
-                        stThreadContext.ContextFlags = CONTEXT_FULL; // this is CONTEXT_INTEGER | CONTEXT_CONTROL | CONTEXT_SEGMENTS;
-                        if(!GetThreadContext(hCurThread, &stThreadContext))
-                        {
-                            logerror(pstLogger, L"%s(): GetThreadContext failed %u", __FUNCTIONW__, GetLastError());
-                        }
-                        else
-                        {
-                            
-                        }
-                    }
+                    //    stThreadContext.ContextFlags = CONTEXT_FULL; // this is CONTEXT_INTEGER | CONTEXT_CONTROL | CONTEXT_SEGMENTS;
+                    //    if(!GetThreadContext(hCurThread, &stThreadContext))
+                    //    {
+                    //        logerror(pstLogger, L"%s(): GetThreadContext failed %u", __FUNCTIONW__, GetLastError());
+                    //    }
+                    //    else
+                    //    {
+                    //        
+                    //    }
+                    //}
 
                     fOnException(pstTargetInfo, &dwContinueStatus);
 
-                    ASSERT(dwContinueStatus == DBG_CONTINUE || dwContinueStatus == DBG_CONT_ABORT ||
-                        dwContinueStatus == DBG_CONT_BREAK || dwContinueStatus == DBG_EXCEPTION_NOT_HANDLED ||
+                    ASSERT(dwContinueStatus == DBG_CONTINUE || dwContinueStatus == DBG_CONTCUSTOM_ABORT ||
+                        dwContinueStatus == DBG_CONTCUSTOM_BREAK || dwContinueStatus == DBG_EXCEPTION_NOT_HANDLED ||
                         dwContinueStatus == DBG_EXCEPTION_HANDLED);
 
                     // TODO: Handle different values of dwContinueStatus
 
-                    ContinueDebugEvent(de.dwProcessId, de.dwThreadId, dwContinueStatus);
+                    if(dwContinueStatus == DBG_CONTCUSTOM_ABORT)
+                    {
+                        // TODO: TerminateProcess without giving it a chance to execute another instruction
+                        ContinueDebugEvent(de.dwProcessId, de.dwThreadId, DBG_CONTINUE);
+                        if(!TerminateProcess(pstTargetInfo->stProcessInfo.hProcess, EXITCODE_TARGET_TERM))
+                        {
+                            logerror(pstLogger, L"%s(): TerminateProcess() failed %u", __FUNCTIONW__, GetLastError());
+
+                            // Return FALSE to quit debug thread so that it will kill the target
+                            return FALSE;
+                        }
+                    }
+                    else if(dwContinueStatus == DBG_CONTCUSTOM_BREAK)
+                    {
+                        // TODO: enter debugging state, DO NOT continue target
+                    }
+                    else
+                    {
+                        /*
+                         * This means we hit a breakpoint or we are single stepping.
+                         * Either case, we must enter the debugging mode without
+                         * giving a chance for the target process to resume execution.
+                         */
+
+                        // Check the iDebugState
+                        if(pstTargetInfo->iDebugState == DSTATE_BREAKPOINTWAIT || pstTargetInfo->iDebugState == DSTATE_SINGLESTEP_BEFORE)
+                        {
+                            // for now, show that we have hit a breakpoint and return
+                            dbgwprintf(L"Entering debugging mode due to exception(0x%08x) at 0x%08x\n", de.u.Exception.ExceptionRecord.ExceptionCode, de.u.Exception.ExceptionRecord.ExceptionAddress);
+                            vSetMenuItemsState(pstTargetInfo);
+                        }
+                        else
+                        {
+                            ContinueDebugEvent(de.dwProcessId, de.dwThreadId, dwContinueStatus);
+                        }
+                    }
                 
                     return TRUE;
                 }
@@ -703,6 +777,34 @@ BOOL fOnException(PTARGETINFO pstTargetInfo, __out DWORD *pdwContinueStatus)
 
 #endif
 
+    // Take action depending on value of iDebugState and pdwContinueStatus
+    switch(*pdwContinueStatus)
+    {
+        case DBG_CONTCUSTOM_ABORT:
+        {
+            // Nothing to do. Cannot TerminateProcess here because we must call ContinueDebugEvent first
+            break;
+        }
+
+        case DBG_CONTCUSTOM_BREAK:
+        {
+            // TODO: Enter debugging state
+            pstTargetInfo->iPrevDebugState = pstTargetInfo->iDebugState;
+            pstTargetInfo->iDebugState = DSTATE_DEBUGGING;
+            
+            // Doesn't matter because we will not call ContinuDebugEvent now
+            // so that the target process does not resume execution
+            *pdwContinueStatus = 0;
+            break;
+        }
+
+        default:
+        {
+            
+        }
+        
+    }
+
     return TRUE;
 }
 
@@ -737,6 +839,7 @@ BOOL fOnCreateProcess(PTARGETINFO pstTargetInfo)
     LPDEBUG_EVENT lpDebugEvent = pstTargetInfo->lpDebugEvent;
 
     CREATE_THREAD_DEBUG_INFO stThreadInfo;
+    BPINFO stBpInfo;
 
 #ifdef _DEBUG
     WCHAR wsImageName[SLEN_MAXPATH];
@@ -799,6 +902,32 @@ BOOL fOnCreateProcess(PTARGETINFO pstTargetInfo)
             logerror(pstLogger, L"%s(): fChlPsGetPtrToCode() failed %u", __FUNCTIONW__, GetLastError());
             goto error_return;
         }
+
+        // **** If break at main, insert breakpoint ****
+        if(pstTargetInfo->pstDebugInfoFromGui->fBreakAtMain)
+        {
+            ZeroMemory(&stBpInfo, sizeof(stBpInfo));
+            stBpInfo.iBpType = BPTYPE_ASMLEVEL | BPTYPE_USERSINGLEHIT;
+            stBpInfo.dwTargetAddr = (DWORD)pstTargetInfo->stProcessInfo.lpStartAddress;
+
+            // TODO: take the BP id??
+            if(!fBpInsert(pstTargetInfo->pListBreakpoint, &stBpInfo, pstTargetInfo, NULL))
+            {
+                // TODO: show message to user
+                logerror(
+                    pstLogger, 
+                    L"%s(): fBpInsert() failed %u. Could not place BP at 0x%08x.", 
+                    __FUNCTIONW__, 
+                    GetLastError(), 
+                    (DWORD)pstTargetInfo->stProcessInfo.lpStartAddress);
+            }
+        }
+    }
+    else
+    {
+        // We should receive the create process only once per debugging session
+        // since we have specified DEBUG_ONLY_THIS_PROCESS flag
+        ASSERT(FALSE);
     }
 
     ++(pstTargetInfo->nCurThreads);
@@ -973,6 +1102,12 @@ static void vSetMenuItemsState(PTARGETINFO pstTargetInfo)
 
     switch(pstTargetInfo->iDebugState)
     {
+        case DSTATE_INVALID:
+        {
+            vMiDebugSessionEnd(pstTargetInfo->pstDebugInfoFromGui->hMainMenu);
+            break;
+        }
+
         case DSTATE_RUNNING:
         {
             vMiDebuggerRunning(pstTargetInfo->pstDebugInfoFromGui->hMainMenu);
@@ -980,6 +1115,8 @@ static void vSetMenuItemsState(PTARGETINFO pstTargetInfo)
         }
 
         case DSTATE_DEBUGGING:
+        case DSTATE_SINGLESTEP_BEFORE:
+        case DSTATE_BREAKPOINTWAIT:
         {
             vMiDebuggerDebugging(pstTargetInfo->pstDebugInfoFromGui->hMainMenu);
             break;

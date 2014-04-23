@@ -58,21 +58,21 @@ void vMiDebuggerRunning(HMENU hMenu)
 
 void vMiDebuggerDebugging(HMENU hMenu)
 {
-    EnableMenuItem(hMenu, IDM_TERMINATETARGET, MF_GRAYED);
-    EnableMenuItem(hMenu, IDM_DETACHFROMTARGET, MF_GRAYED);
-    EnableMenuItem(hMenu, IDM_DUMPANDTERMINATETARGET, MF_GRAYED);
+    EnableMenuItem(hMenu, IDM_TERMINATETARGET, MF_ENABLED);
+    EnableMenuItem(hMenu, IDM_DETACHFROMTARGET, MF_ENABLED);
+    EnableMenuItem(hMenu, IDM_DUMPANDTERMINATETARGET, MF_ENABLED);
 
     EnableMenuItem(hMenu, IDM_BREAKINTOTARGET, MF_GRAYED);
 
-    // todo: can we suspend /resume threads when the target has been suspended?
+    // TODO: can we suspend /resume threads when the target has been suspended?
     EnableMenuItem(hMenu, IDM_SUSPENDALLTHREADS, MF_GRAYED);
     EnableMenuItem(hMenu, IDM_RESUMEALLTHREADS, MF_GRAYED);
     EnableMenuItem(hMenu, IDM_SUSPRESUME, MF_GRAYED);
 
-    EnableMenuItem(hMenu, IDM_CONTINUE, MF_GRAYED);
-    EnableMenuItem(hMenu, IDM_STEPINTO, MF_GRAYED);
-    EnableMenuItem(hMenu, IDM_STEPOVER, MF_GRAYED);
-    EnableMenuItem(hMenu, IDM_STEPOUT, MF_GRAYED);
+    EnableMenuItem(hMenu, IDM_CONTINUE, MF_ENABLED);
+    EnableMenuItem(hMenu, IDM_STEPINTO, MF_ENABLED);
+    EnableMenuItem(hMenu, IDM_STEPOVER, MF_ENABLED);
+    EnableMenuItem(hMenu, IDM_STEPOUT, MF_ENABLED);
 }
 
 static void vOpenProgramProcess(HMENU hMenu, DWORD dwChangeTo)

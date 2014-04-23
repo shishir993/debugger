@@ -23,6 +23,9 @@ static BOOL fCreateConsoleWindow();
 // Menu item handlers
 static BOOL fStartDebugSession(HWND hMainWindow, struct _DbgSessionStart *pstSessionInfo, __out DWORD *pdwErrCode);
 
+static BOOL fSendMessageDebugThread(int iCurIndex, DWORD dwMsgToSend, PGUIDBGCOMM pstCommInfo);
+
+
 LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM lParam)
 {
     DWORD dwError = ERROR_SUCCESS;
@@ -140,52 +143,20 @@ LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM l
 
                 case IDM_TERMINATETARGET:
                 {
-                    DWORD dwThreadId = 0;
-
-                    if(!fGuiFindTab(iCurTabIndex, &dwThreadId, &dwError))
-                    {
-                        logerror(pstLogger, L"Cannot find thread ID for tab index %d", iCurTabIndex);
-
-                        // todo: show messagebox?
-                    }
-                    else
-                    {
-                        PostThreadMessage(dwThreadId, GD_SESS_TERM, 0, NULL);
-                    }
+                    // TODO: handle error return. show MessageBox?
+                    fSendMessageDebugThread(iCurTabIndex, GD_SESS_TERM,  NULL);
                     return 0;
                 }
 
                 case IDM_DETACHFROMTARGET:
                 {
-                    DWORD dwThreadId = 0;
-
-                    if(!fGuiFindTab(iCurTabIndex, &dwThreadId, &dwError))
-                    {
-                        logerror(pstLogger, L"Cannot find thread ID for tab index %d", iCurTabIndex);
-
-                        // todo: show messagebox?
-                    }
-                    else
-                    {
-                        PostThreadMessage(dwThreadId, GD_SESS_DETACH, 0, NULL);
-                    }
+                    fSendMessageDebugThread(iCurTabIndex, GD_SESS_DETACH,  NULL);
                     return 0;
                 }
 
                 case IDM_DUMPANDTERMINATETARGET:
                 {
-                    DWORD dwThreadId = 0;
-
-                    if(!fGuiFindTab(iCurTabIndex, &dwThreadId, &dwError))
-                    {
-                        logerror(pstLogger, L"Cannot find thread ID for tab index %d", iCurTabIndex);
-
-                        // todo: show messagebox?
-                    }
-                    else
-                    {
-                        PostThreadMessage(dwThreadId, GD_SESS_DUMPTERM, 0, NULL);
-                    }
+                    fSendMessageDebugThread(iCurTabIndex, GD_SESS_DUMPTERM,  NULL);
                     return 0;
                 }
 
@@ -198,39 +169,21 @@ LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM l
                     return 0;
                 }
 
+                case IDM_CONTINUE:
+                {
+                    fSendMessageDebugThread(iCurTabIndex, GD_MENU_CONTINUE,  NULL);
+                    return 0;
+                }
+
                 case IDM_SUSPENDALLTHREADS:
                 {
-                    DWORD dwThreadId = 0;
-
-                    if(!fGuiFindTab(iCurTabIndex, &dwThreadId, &dwError))
-                    {
-                        logerror(pstLogger, L"Cannot find thread ID for tab index %d", iCurTabIndex);
-
-                        // todo: show messagebox?
-                    }
-                    else
-                    {
-                        PostThreadMessage(dwThreadId, GD_MENU_SUSPALL, 0, NULL);
-                    }
-
+                    fSendMessageDebugThread(iCurTabIndex, GD_MENU_SUSPALL,  NULL);
                     return 0;
                 }
 
                 case IDM_RESUMEALLTHREADS:
                 {
-                    DWORD dwThreadId = 0;
-
-                    if(!fGuiFindTab(iCurTabIndex, &dwThreadId, &dwError))
-                    {
-                        logerror(pstLogger, L"Cannot find thread ID for tab index %d", iCurTabIndex);
-
-                        // todo: show messagebox?
-                    }
-                    else
-                    {
-                        PostThreadMessage(dwThreadId, GD_MENU_RESALL, 0, NULL);
-                    }
-                    
+                    fSendMessageDebugThread(iCurTabIndex, GD_MENU_RESALL,  NULL);
                     return 0;
                 }
 
@@ -367,6 +320,25 @@ static BOOL fStartDebugSession(HWND hMainWindow, struct _DbgSessionStart *pstSes
     IFPTR_SETVAL(pdwErrCode, dwErrorCode);
     // remove the tab page
     return FALSE;
+}
+
+static BOOL fSendMessageDebugThread(int iCurIndex, DWORD dwMsgToSend, PGUIDBGCOMM pstCommInfo)
+{
+    ASSERT(iCurIndex >= 0);
+    ASSERT(dwMsgToSend >= CUSTOM_GDEVENT_START && dwMsgToSend <= CUSTOM_GDEVENT_END);
+
+    DWORD dwError;
+    DWORD dwThreadId;
+
+    DBG_UNREFERENCED_PARAMETER(pstCommInfo);
+
+    if(!fGuiFindTab(iCurTabIndex, &dwThreadId, &dwError))
+    {
+        logerror(pstLogger, L"Cannot find thread ID for tab index %d", iCurTabIndex);
+        return FALSE;
+    }
+
+    return PostThreadMessage(dwThreadId, dwMsgToSend, 0, NULL);
 }
 
 static BOOL fCreateConsoleWindow()

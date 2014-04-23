@@ -6,15 +6,29 @@
 #include "UICreator.h"
 #include "CHelpLibDll.h"
 
-#define DSTATE_INVALID          0
-#define DSTATE_RUNNING          1
-#define DSTATE_DEBUGGING        2
-#define DSTATE_SINGLESTEPPING   3
-#define DSTATE_MODBREAKPOINT    4   // handling state after breakpoint hit
+#define DSTATE_INVALID                  0
+#define DSTATE_RUNNING                  1      // 
+
+// DO NOT process debug event loop, just wait for user input
+// and take action accordingly
+#define DSTATE_DEBUGGING                2
+
+// User is single stepping(step into)
+// Before: we are waiting for user input, DO NOT process debug event loop
+// After: user has pressed step into, process debug event loop
+#define DSTATE_SINGLESTEP_BEFORE        3
+#define DSTATE_SINGLESTEP_AFTER         4          
+
+// Debugger is using single step for its own purpose
+#define DSTATE_SINGLESTEP_DBG           5
+
+// State after breakpoint hit. We must wait for user input and DO NOT
+// let target process continue execution when in this state
+#define DSTATE_BREAKPOINTWAIT           6
 
 // Action the user specified when an unexpected BP was encountered
-#define DBG_CONT_ABORT  10
-#define DBG_CONT_BREAK  11
+#define DBG_CONTCUSTOM_ABORT  10
+#define DBG_CONTCUSTOM_BREAK  11
 
 #define MAX_BREAKPOINTS     256 // maximum logical breakpoints
 
@@ -36,8 +50,6 @@ typedef struct _BpInfo {
 
     DWORD dwTargetAddr;
 
-    HANDLE hTargetProcess;
-
 }BPINFO, *PBPINFO;
 
 typedef struct _DebugInfo {
@@ -50,6 +62,11 @@ typedef struct _DebugInfo {
     WCHAR szInitSyncEvtName[SLEN_EVENTNAMES];
     TABPAGEINFO stTabPageInfo;
 }DEBUGINFO, *PDEBUGINFO;
+
+typedef struct _PrevBpInfo {
+    DWORD dwThreadId;
+    BPINFO stBpInfo;
+}PREVBPINFO;
 
 typedef struct _TargetInfo {
     PDEBUGINFO pstDebugInfoFromGui;
@@ -72,7 +89,7 @@ typedef struct _TargetInfo {
     CHL_HTABLE *phtDllsLoaded;
     CHL_HTABLE *phtThreads;
     PBPLIST pListBreakpoint;
-    BPINFO stPrevBpInfo;
+    PREVBPINFO stPrevBpInfo;
     
     int nCurThreads;
     int nTotalProcesses;
@@ -82,6 +99,7 @@ typedef struct _TargetInfo {
     int nTotalDllsLoaded;
 
     int iDebugState;
+    int iPrevDebugState;
 
     LPDEBUG_EVENT lpDebugEvent;
 }TARGETINFO, *PTARGETINFO;

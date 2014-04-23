@@ -257,15 +257,16 @@ BOOL fHandleExceptionBreakpoint(PTARGETINFO pstTargetInfo, __out PDWORD pdwConti
     // Found the breakpoint info
     if(stBpInfo.iBpType & BPTYPE_USERSINGLEHIT || stBpInfo.iBpType & BPTYPE_USERMULTIHIT)
     {
-        memcpy(&pstTargetInfo->stPrevBpInfo, &stBpInfo, sizeof(BPINFO));
-        if(pstTargetInfo->iDebugState != DSTATE_SINGLESTEPPING)
-        {
-            pstTargetInfo->iDebugState = DSTATE_MODBREAKPOINT;
-        }
+        // Save this breakpoint information so that we resume target execution(by removing BP) later.
+        pstTargetInfo->stPrevBpInfo.dwThreadId = pstTargetInfo->lpDebugEvent->dwThreadId;
+        memcpy(&pstTargetInfo->stPrevBpInfo.stBpInfo, &stBpInfo, sizeof(BPINFO));
+
+        pstTargetInfo->iPrevDebugState = pstTargetInfo->iDebugState;
+        pstTargetInfo->iDebugState = DSTATE_BREAKPOINTWAIT;
     }
     else if(stBpInfo.iBpType & BPTYPE_DEBUGGERSINGLEHIT || stBpInfo.iBpType & BPTYPE_DEBUGGERMULTIHIT)
     {
-        // todo:
+        // TODO:
     }
     else
     {
@@ -330,20 +331,20 @@ void vSetContinueStatusFromUser(DWORD dwExceptionCode, DWORD dwExceptionAddress,
         case IDABORT:
         {   
             // User wants to abort target process immediately
-            *pdwContinueStatus = DBG_CONT_ABORT;
+            *pdwContinueStatus = DBG_CONTCUSTOM_ABORT;
             break;
         }
 
         case IDRETRY:
         {
             // User wants to break and enter debugging mode
-            *pdwContinueStatus = DBG_CONT_BREAK;
+            *pdwContinueStatus = DBG_CONTCUSTOM_BREAK;
             break;
         }
 
         case IDIGNORE:
         {
-            *pdwContinueStatus = DBG_CONTINUE;
+            *pdwContinueStatus = DBG_EXCEPTION_NOT_HANDLED;
             break;
         }
 
@@ -356,4 +357,44 @@ void vSetContinueStatusFromUser(DWORD dwExceptionCode, DWORD dwExceptionAddress,
     }// switch(userChoice)
 
     return;
+}
+
+BOOL fDecrementInstPointer(CHL_HTABLE *phtThreads, DWORD dwThreadId)
+{
+    ASSERT(phtThreads);
+    ASSERT(dwThreadId > 0);
+
+    HANDLE hThread;
+    CONTEXT stThreadContext;
+
+    if(!fGetThreadHandle(phtThreads, dwThreadId, &hThread))
+    {
+        logerror(pstLogger, L"%s(): Cannot get thread handle for thread %u", __FUNCTIONW__, dwThreadId);
+        goto error_return;
+    }
+
+    ZeroMemory(&stThreadContext, sizeof(CONTEXT));
+
+    stThreadContext.ContextFlags = CONTEXT_CONTROL;
+    if(!GetThreadContext(hThread, &stThreadContext))
+    {
+        logerror(pstLogger, L"%s(): GetThreadContext failed %u", __FUNCTIONW__, GetLastError());
+        goto error_return;
+    }
+
+    dbgwprintf(L"EIP before decrementing: 0x%08x\n", stThreadContext.Eip);
+    --stThreadContext.Eip;
+
+    dbgwprintf(L"EIP after decrementing: 0x%08x\n", stThreadContext.Eip);
+    stThreadContext.ContextFlags = CONTEXT_CONTROL;
+    if(!SetThreadContext(hThread, &stThreadContext))
+    {
+        logerror(pstLogger, L"%s(): SetThreadContext failed %u", __FUNCTIONW__, GetLastError());
+        goto error_return;
+    }
+
+    return TRUE;
+
+error_return:
+    return FALSE;
 }

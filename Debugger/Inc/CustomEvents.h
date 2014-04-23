@@ -30,4 +30,8 @@
 #define CUSTOM_GDEVENT_START  GD_TAB_INFOCUS
 #define CUSTOM_GDEVENT_END    GD_SESS_DUMPTERM
 
+// Start and end values of Debug->Gui messages
+#define CUSTOM_DGEVENT_START    DG_SESS_TERM
+#define CUSTOM_DGEVENT_END      DG_SESS_TERM
+
 #endif // _CUSTOMEVENTS_H

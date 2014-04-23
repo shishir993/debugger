@@ -41,7 +41,7 @@ BOOL fBpInitialize(__out PBPLIST *ppBreakpoints);
 BOOL fBpTerminate(PBPLIST pBreakpoints);
 
 BOOL fBpInsert(PBPLIST pstBpList, PBPINFO pstBpInfo, PTARGETINFO pstTargetInfo, __out OPTIONAL PINT piBpID);
-BOOL fBpRemove(PBPLIST pstBpList, PBPINFO pstBpInfo, PINT piBpID, PTARGETINFO pstTargetInfo);
+BOOL fBpRemove(PBPLIST pstBpList, PBPINFO pstBpInfo, PTARGETINFO pstTargetInfo);
 BOOL fBpFind(PBPLIST pstBpList, __inout PBPINFO pstBpInfo, PINT piBpID);
 
 #endif // _BREAKPOINTS_H

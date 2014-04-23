@@ -3,7 +3,7 @@
 
 extern PLOGGER pstLogger;
 
-#define OPCODE_BREAKPOINT   0x03
+#define OPCODE_BREAKPOINT   0xCC
 
 static int iGetFirstFreeIdentifier(PINT paiIdentifiers);
 static BOOL fBpInsert_Internal(HANDLE hTargetProcess, DWORD dwTargetAddr, __out PBYTE pbOrigCodeByte);
@@ -89,7 +89,7 @@ BOOL fBpInsert(PBPLIST pstBpList, PBPINFO pstBpInfo, PTARGETINFO pstTargetInfo, 
     // Insert into list of breakpoints
     if(!fChlDsInsertLL(pstBpList->pstLinkedListBp, &stBreakpoint, sizeof(stBreakpoint)))
     {
-        logerror(pstLogger, L"%s(): fChlDsInsertLL() failed %u", GetLastError());
+        logerror(pstLogger, L"%s(): fChlDsInsertLL() failed %u", __FUNCTIONW__, GetLastError());
 
         // Remove the inserted breakpoint
         if(stBreakpoint.nReferences == 1)
@@ -107,7 +107,7 @@ error_return:
     return FALSE;
 }
 
-BOOL fBpRemove(PBPLIST pstBpList, PBPINFO pstBpInfo, PINT piBpID, PTARGETINFO pstTargetInfo)
+BOOL fBpRemove(PBPLIST pstBpList, PBPINFO pstBpInfo, PTARGETINFO pstTargetInfo)
 {
     ASSERT(pstBpList);
     ASSERT(pstBpInfo);
@@ -120,8 +120,6 @@ BOOL fBpRemove(PBPLIST pstBpList, PBPINFO pstBpInfo, PINT piBpID, PTARGETINFO ps
 
     BREAKPOINT stBpToFind;
     PBREAKPOINT pstBpFound = NULL;
-
-    DBG_UNREFERENCED_PARAMETER(piBpID);
 
     // TODO: assign bpType as well
     stBpToFind.stActualBp.dwAddrInTarget = pstBpInfo->dwTargetAddr;
@@ -138,7 +136,7 @@ BOOL fBpRemove(PBPLIST pstBpList, PBPINFO pstBpInfo, PINT piBpID, PTARGETINFO ps
     // Replace breakpoint instruction with original opcode
     if(pstBpFound->nReferences == 1)
     {
-        dbgwprintf(L"%s(): Removing actual breakpoint at 0x%08x because #references == 1\n", pstBpFound->stActualBp.dwAddrInTarget);
+        dbgwprintf(L"%s(): Removing actual breakpoint at 0x%08x because #references == 1\n", __FUNCTIONW__, pstBpFound->stActualBp.dwAddrInTarget);
         if(!fBpRemove_Internal(pstTargetInfo->stProcessInfo.hProcess, pstBpFound->stActualBp.dwAddrInTarget, pstBpFound->stActualBp.bOrigCodeByte))
         {
             logerror(pstLogger, L"%s(): fBpRemove_Internal() failed %u", __FUNCTIONW__, GetLastError());
@@ -219,7 +217,7 @@ static BOOL fBpInsert_Internal(HANDLE hTargetProcess, DWORD dwTargetAddr, __out 
 
     // TODO: check bytesReadWritten?
 
-    dbgwprintf(L"Original code byte: 0x%02x\n", bOrigCode);
+    dbgwprintf(L"Original code byte at 0x%08x: 0x%02x\n", dwTargetAddr, bOrigCode);
 
     // Overwrite with breakpoint instruction
     if(!WriteProcessMemory(hTargetProcess, (LPVOID)dwTargetAddr, &bBreakpointInst, sizeof(BYTE), &bytesReadWritten))
@@ -247,11 +245,11 @@ static BOOL fBpRemove_Internal(HANDLE hTargetProcess, DWORD dwTargetAddr, BYTE b
     // Get the original code byte first
     if(!ReadProcessMemory(hTargetProcess, (LPCVOID)dwTargetAddr, &bOrigCode, sizeof(bOrigCode), &bytesReadWritten))
     {
-        logwarn(pstLogger, L"%s(): ReadProcessMemory() failed %u", GetLastError());
+        logwarn(pstLogger, L"%s(): ReadProcessMemory() failed %u", __FUNCTIONW__, GetLastError());
     }
     else
     {
-        wprintf(L"%s(): Opcode before replacement: 0x%02x\n", bOrigCode);
+        wprintf(L"%s(): Opcode before replacement at 0x%08x: 0x%02x\n", __FUNCTIONW__, dwTargetAddr, bOrigCode);
         ASSERT(bOrigCode == OPCODE_BREAKPOINT);
     }
 

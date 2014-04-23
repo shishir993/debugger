@@ -21,4 +21,6 @@ BOOL fHandleExceptionBreakpoint(PTARGETINFO pstTargetInfo, __out PDWORD pdwConti
 
 void vSetContinueStatusFromUser(DWORD dwExceptionCode, DWORD dwExceptionAddress, BOOL fFirstChance, PDWORD pdwContinueStatus);
 
+BOOL fDecrementInstPointer(CHL_HTABLE *phtThreads, DWORD dwThreadId);
+
 #endif // _DEBUGTHREADHELPERS_H
