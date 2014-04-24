@@ -7,6 +7,12 @@
 extern HINSTANCE g_hMainInstance;
 extern PLOGGER pstLogger;
 
+static int aiColumnSizePercent_Threads[] = { 12, 12, 52, 12, 12 };
+static int aiColumnSizePercent_Regs[] = { 15, 85 };
+
+static WCHAR *aszColumnNames_Threads[] = { L"ThreadId", L"EIPLocation", L"Function", L"Type", L"Priority" };
+static WCHAR *aszColumnNames_Regs[] = { L"Name", L"Value" };
+
 // File local functions
 static BOOL fInsertTabItem(HWND hTab, WCHAR *pszText, __out int *piNewIndex, __out DWORD *pdwErrCode);
 
@@ -77,6 +83,18 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
     ScreenToClient(hTab, (LPPOINT)&rcTabDisplay.left);
     ScreenToClient(hTab, (LPPOINT)&rcTabDisplay.right);
 
+    // Calculate width for the text 'Command:' without quotes
+    WCHAR szTextCommand[] = L"Command:";
+    int iTextWidth, iTextHeight;
+    
+    if(!fChlGuiGetTextArea(hTab, wcslen(szTextCommand), &iTextWidth, &iTextHeight))
+    {
+        logerror(pstLogger, L"%s(): fChlGuiGetTextArea() failed %u", GetLastError());
+        goto error_return;
+    }
+
+    int iCursorHeight = GetSystemMetrics(SM_CYCURSOR);
+
     // Bounding rectangle of the tab page's display area
     int x0 = rcTabDisplay.left;
     int y0 = rcTabDisplay.top;
@@ -88,6 +106,8 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
     int y35 = yMax * 0.35;
     int y55 = yMax * 0.55;
     int y85 = yMax * 0.85;
+
+    int liHeight = (yMax - iCursorHeight) * 0.33;
 
     int w50 = x50;          // width 1/2
     int h75 = y75;          // height 3/4
@@ -119,11 +139,11 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
     hListCStack = CreateWindow(
                                 WC_LISTVIEW,
                                 NULL,
-                                WS_CHILD | WS_BORDER | LVS_REPORT,
+                                WS_CHILD | WS_BORDER | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_ALIGNLEFT,
                                 x50,
                                 y0,
                                 w50,
-                                h35,
+                                liHeight,
                                 hTab,
                                 (HMENU)IDC_LIST_CALLSTACK,
                                 g_hMainInstance,
@@ -132,14 +152,16 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
     ISNULL_GOTO(hListCStack, error_return);
     GetWindowRect(hListCStack, &rcTemp);
 
+    // TODO: initialize columns
+
     hListRegisters = CreateWindow( 
                                     WC_LISTVIEW,
                                     NULL,
-                                    WS_CHILD | WS_BORDER | LVS_REPORT,
+                                    WS_CHILD | WS_BORDER | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_ALIGNLEFT,
                                     x50,
-                                    y35,
+                                    y0 + liHeight,
                                     w50,
-                                    h20,
+                                    liHeight,
                                     hTab,
                                     (HMENU)IDC_LIST_REGISTERS,
                                     g_hMainInstance,
@@ -148,14 +170,21 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
     ISNULL_GOTO(hListRegisters, error_return);
     GetWindowRect(hListRegisters, &rcTemp);
 
+    // Initialize columns
+    if(!fChlGuiInitListViewColumns(hListRegisters, aszColumnNames_Regs, NELEMS_ARRAY(aszColumnNames_Regs), aiColumnSizePercent_Regs))
+    {
+        // todo: log error
+        goto error_return;
+    }
+
     hListThreads = CreateWindow( 
                                     WC_LISTVIEW,
                                     NULL,
-                                    WS_CHILD | WS_BORDER | LVS_REPORT,
+                                    WS_CHILD | WS_BORDER | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_ALIGNLEFT,
                                     x50,
-                                    y55,
+                                    y0 + liHeight + liHeight,
                                     w50,
-                                    h30,
+                                    liHeight,
                                     hTab,
                                     (HMENU)IDC_LIST_THREADS,
                                     g_hMainInstance,
@@ -164,13 +193,10 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
     ISNULL_GOTO(hListThreads, error_return);
     GetWindowRect(hListThreads, &rcTemp);
 
-    // Calculate width for the text 'Command:' without quotes
-    WCHAR szTextCommand[] = L"Command:";
-    int iTextWidth, iTextHeight;
-    
-    if(!fChlGuiGetTextArea(hTab, wcslen(szTextCommand), &iTextWidth, &iTextHeight))
+    // Initialize columns
+    if(!fChlGuiInitListViewColumns(hListThreads, aszColumnNames_Threads, NELEMS_ARRAY(aszColumnNames_Threads), aiColumnSizePercent_Threads))
     {
-        logerror(pstLogger, L"%s(): fChlGuiGetTextArea() failed %u", GetLastError());
+        // todo: log error
         goto error_return;
     }
 
@@ -180,9 +206,9 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                                     NULL,
                                     WS_CHILD | WS_BORDER | WS_VISIBLE,
                                     x50,
-                                    y85,
+                                    yMax - iCursorHeight,
                                     iTextWidth + 2,
-                                    iTextHeight,
+                                    iCursorHeight,
                                     hTab,
                                     NULL,
                                     g_hMainInstance,
@@ -191,14 +217,15 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
     ISNULL_GOTO(hStaticCommand, error_return);
     SendMessage(hStaticCommand, WM_SETTEXT, 0, (LPARAM)szTextCommand);
 
+    GetWindowRect(hStaticCommand, &rcTemp);
     hEditCommand = CreateWindow(
                                 WC_EDIT,
                                 NULL,
                                 WS_CHILD | WS_BORDER | WS_VISIBLE | ES_LEFT,
                                 x50 + iTextWidth + 2,
-                                y85,
+                                yMax - iCursorHeight,
                                 w50 - iTextWidth - 2,
-                                h15,
+                                iCursorHeight,
                                 hTab,
                                 NULL,
                                 g_hMainInstance,

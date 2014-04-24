@@ -38,7 +38,8 @@ LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM l
 
 #if _DEBUG
             fCreateConsoleWindow();
-#endif  
+#endif
+
             if(!fCreateMainTabControl(hMainWindow, &hMainTab, &dwError))
             {
                 vWriteLog(pstLogger, L"%s(): Cannot create main control: %d", __FUNCTIONW__, dwError);

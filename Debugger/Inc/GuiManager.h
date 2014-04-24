@@ -7,6 +7,7 @@
 
 #include "UICommon.h"
 #include "CHelpLibDll.h"
+#include "GuiDebugCommon.h"
 
 BOOL fGuiInitialize(__out DWORD *pdwErrCode);
 void vGuiExit();
@@ -18,5 +19,7 @@ BOOL fGuiGetOpenFilename(HWND hMainWindow, WCHAR *pszFilters, __out WCHAR *pszFi
 
 BOOL CALLBACK fGetProcIdDP(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
 BOOL CALLBACK fGetNewProgramDP(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+
+BOOL fGuiUpdateThreadsList(HWND hThreadListView, PLV_THREADINFO pstLvThreadInfo, int nItems);
 
 #endif // _GUIMANAGER_H

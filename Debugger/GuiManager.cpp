@@ -529,3 +529,57 @@ BOOL CALLBACK fGetNewProgramDP(HWND hDlg, UINT message, WPARAM wParam, LPARAM lP
 
     return FALSE;
 }
+
+BOOL fGuiUpdateThreadsList(HWND hThreadListView, PLV_THREADINFO pstLvThreadInfo, int nItems)
+{
+    ASSERT(ISVALID_HANDLE(hThreadListView));
+    ASSERT(pstLvThreadInfo);
+    ASSERT(nItems > 0 && nItems < 16000);   // a reasonable limit, dont'cha think?
+
+    WCHAR szThreadId[SLEN_INT16];
+    WCHAR szEipLocation[SLEN_DWORDSTR_HEX];
+    WCHAR szFunctionName[SLEN_COMMON128];
+    WCHAR szType[SLEN_COMMON32];
+    WCHAR szPriority[SLEN_INT16];
+
+    int index;
+    WCHAR **ppszStrings;
+
+    // Allocate memory to hold WCHAR pointers to the 5 items to display
+    if(!fChlMmAlloc((void**)&ppszStrings, sizeof(WCHAR*) * LV_THREAD_NUMITEMS, NULL))
+    {
+        return FALSE;
+    }
+
+    ASSERT(LV_THREAD_NUMITEMS == 5);
+
+    ppszStrings[0] = szThreadId;
+    ppszStrings[1] = szEipLocation;
+    ppszStrings[2] = szFunctionName;
+    ppszStrings[3] = szType;
+    ppszStrings[4] = szPriority;
+
+    for(index = 0; index < nItems; ++index)
+    {
+        // Construct the strings
+        swprintf_s(szThreadId, _countof(szThreadId), L"%u", pstLvThreadInfo[index].dwThreadId);
+        swprintf_s(szEipLocation, _countof(szEipLocation), L"0x%08x", pstLvThreadInfo[index].dwEIPLocation);
+        swprintf_s(szFunctionName, _countof(szFunctionName), L"0x%08x", pstLvThreadInfo[index].szFunction);
+
+        ASSERT(pstLvThreadInfo[index].thType == THTYPE_MAIN || pstLvThreadInfo[index].thType == THTYPE_WORKER);
+        swprintf_s(szType, _countof(szType), L"0x%08x", aszThreadTypes[pstLvThreadInfo[index].thType]);
+
+        swprintf_s(szPriority, _countof(szPriority), L"%d", pstLvThreadInfo[index].iThreadPri);
+
+        // Insert into list view
+        if(!fChlGuiAddListViewRow(hThreadListView, ppszStrings, LV_THREAD_NUMITEMS))
+        {
+            logerror(pstLogger, L"%s(): fChlGuiAddListViewRow failed %u", __FUNCTIONW__, GetLastError());
+            return FALSE;
+        }
+    }
+
+    vChlMmFree((void**)&ppszStrings);
+
+    return TRUE;
+}

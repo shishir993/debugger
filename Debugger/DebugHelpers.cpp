@@ -1,6 +1,7 @@
 
 #include "Inc\DebugHelpers.h"
 #include "Inc\Breakpoint.h"
+#include "Inc\GuiManager.h"
 
 extern PLOGGER pstLogger;
 
@@ -397,4 +398,82 @@ BOOL fDecrementInstPointer(CHL_HTABLE *phtThreads, DWORD dwThreadId)
 
 error_return:
     return FALSE;
+}
+
+BOOL fUpdateThreadsListView(HWND hList, CHL_HTABLE *phtThreads, HANDLE hMainThread)
+{
+    ASSERT(ISVALID_HANDLE(hList));
+    ASSERT(phtThreads);
+
+    BOOL fRetVal = TRUE;
+
+    CHL_HT_ITERATOR itr;
+    int keysize, valsize;
+
+    DWORD dwThreadID = 0;
+    LPCREATE_THREAD_DEBUG_INFO pThreadDbgInfo = NULL;
+
+    int nThreads;
+    PLV_THREADINFO pstThreadInfo = NULL;
+
+    DWORD dwEip;
+    int iThreadPri;
+
+    CONTEXT stContext;
+
+    // Create memory to hold thread info for display
+    // Assume 32 max threads now because there is no easy way to get this info
+    // from the hashtable
+    // TODO: Handle dynamic number of threads
+    if(!fChlMmAlloc((void**)&pstThreadInfo, sizeof(LV_THREADINFO) * 32, NULL))
+    {
+        return FALSE;
+    }
+
+    ZeroMemory(&stContext, sizeof(stContext));
+
+    nThreads = 0;
+    fChlDsInitIteratorHT(&itr);
+    while(fChlDsGetNextHT(phtThreads, &itr, &dwThreadID, &keysize, &pThreadDbgInfo, &valsize))
+    {
+        ASSERT(pThreadDbgInfo);
+        ASSERT(ISVALID_HANDLE(pThreadDbgInfo->hThread));
+
+        pstThreadInfo[nThreads].dwThreadId = dwThreadID;
+
+        // Get EIP value
+        stContext.ContextFlags = CONTEXT_CONTROL;
+        if(!GetThreadContext(pThreadDbgInfo->hThread, &stContext))
+        {
+            dbgwprintf(L"%s(): GetThreadPriority() failed for id = %u, handle = 0x%08x", __FUNCTIONW__, dwThreadID, pThreadDbgInfo->hThread);
+            logwarn(pstLogger, L"%s(): GetThreadContext() failed for id = %u, handle = 0x%08x", __FUNCTIONW__, dwThreadID, pThreadDbgInfo->hThread);
+            pstThreadInfo[nThreads].dwEIPLocation = 0;
+        }
+        else
+        {
+            pstThreadInfo[nThreads].dwEIPLocation = stContext.Eip;
+        }
+
+        // Determine main / worker thread
+        pstThreadInfo[nThreads].thType = pThreadDbgInfo->hThread == hMainThread ? THTYPE_MAIN : THTYPE_WORKER;
+
+        // Get priority
+        pstThreadInfo[nThreads].iThreadPri = GetThreadPriority(pThreadDbgInfo->hThread);
+        if(pstThreadInfo[nThreads].iThreadPri == THREAD_PRIORITY_ERROR_RETURN)
+        {
+            dbgwprintf(L"%s(): GetThreadPriority() failed for id = %u, handle = 0x%08x", __FUNCTIONW__, dwThreadID, pThreadDbgInfo->hThread);
+            logwarn(pstLogger, L"%s(): GetThreadPriority() failed for id = %u, handle = 0x%08x", __FUNCTIONW__, dwThreadID, pThreadDbgInfo->hThread);
+        }
+
+        pstThreadInfo[nThreads].szFunction[0] = 0;
+
+        ++nThreads;
+    }
+
+    // Update listview
+    fRetVal = fGuiUpdateThreadsList(hList, pstThreadInfo, nThreads);
+
+    vChlMmFree((void**)&pstThreadInfo);
+
+    return fRetVal;
 }

@@ -5,6 +5,7 @@
 #include "Common.h"
 #include "CHelpLibDll.h"
 #include "DebugCommon.h"
+#include "GuiDebugCommon.h"
 
 BOOL fGetExceptionName(DWORD excode, __out WCHAR *pwsBuffer, int bufSize);
 
@@ -22,5 +23,8 @@ BOOL fHandleExceptionBreakpoint(PTARGETINFO pstTargetInfo, __out PDWORD pdwConti
 void vSetContinueStatusFromUser(DWORD dwExceptionCode, DWORD dwExceptionAddress, BOOL fFirstChance, PDWORD pdwContinueStatus);
 
 BOOL fDecrementInstPointer(CHL_HTABLE *phtThreads, DWORD dwThreadId);
+
+// Gui management
+BOOL fUpdateThreadsListView(HWND hList, CHL_HTABLE *phtThreads);
 
 #endif // _DEBUGTHREADHELPERS_H

@@ -4,6 +4,8 @@
 
 #include <Windows.h>
 
+#define NELEMS_ARRAY(arr_var)                   (sizeof(arr_var)/sizeof(arr_var[0]))
+
 #define ISNULL(PtrHandle)                       (PtrHandle == NULL)
 #define ISNULL_GOTO(PtrHandle, gotoLocation)    if(ISNULL(PtrHandle)) { goto gotoLocation; }
 #define ISVALID_HANDLE(handle)                  (handle != NULL && handle != INVALID_HANDLE_VALUE)

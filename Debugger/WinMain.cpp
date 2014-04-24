@@ -63,8 +63,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR szCmdLine,
 						WS_SYSMENU,				// window style
 						CW_USEDEFAULT,			// initial X position
 						CW_USEDEFAULT,			// initial Y position
-						800,					// initial X size
-						600,					// initial Y size
+						1366,					// initial X size
+						768,					// initial Y size
 						NULL,					// parent window handle
 						NULL,					// window menu handle
 						g_hMainInstance,		// program instance handle
