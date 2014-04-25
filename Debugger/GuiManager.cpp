@@ -143,6 +143,8 @@ BOOL fOnExitDetachTargets()
             fRetVal = FALSE;
 
             logerror(pstLogger, L"PostThreadMessage() failed %u", GetLastError());
+
+            CloseHandle(hThread);
             continue;
         }
 
@@ -156,6 +158,8 @@ BOOL fOnExitDetachTargets()
 
             // fall through to end of while
         }
+
+        CloseHandle(hThread);
     }
 
     return fRetVal;
