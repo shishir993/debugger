@@ -42,7 +42,11 @@ BOOL fBpTerminate(PBPLIST pBreakpoints)
     ASSERT(pBreakpoints);
     ASSERT(pBreakpoints->pstLinkedListBp);
 
-    return fChlDsDestroyLL(pBreakpoints->pstLinkedListBp);
+    BOOL fRetVal = fChlDsDestroyLL(pBreakpoints->pstLinkedListBp);
+
+    vChlMmFree((void**)&pBreakpoints);
+
+    return fRetVal;
 }
 
 BOOL fBpInsert(PBPLIST pstBpList, PBPINFO pstBpInfo, PTARGETINFO pstTargetInfo, __out OPTIONAL PINT piBpID)

@@ -107,6 +107,8 @@ typedef struct _TargetInfo {
     int iDebugState;
     int iPrevDebugState;
 
+    BOOL fDetachOnDebuggerExit;
+
     LPDEBUG_EVENT lpDebugEvent;
 }TARGETINFO, *PTARGETINFO;
 

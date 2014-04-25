@@ -4,7 +4,7 @@
 
 extern PLOGGER pstLogger;
 
-CHL_HTABLE *pTabThreadMap = NULL;
+static CHL_HTABLE *pTabThreadMap = NULL;
 
 // File local functions
 static BOOL fDisplayActiveProcesses(HWND hProcIDList, DWORD **paProcIDs, DWORD *pnProcIDs, DWORD *pnItemsShown);
@@ -93,6 +93,72 @@ BOOL fGuiFindTab(int tabIndex, __out DWORD *pdwThreadId, __out DWORD *pdwErrCode
 
     *pdwThreadId = dwThreadId;
     return TRUE;
+}
+
+// Function to be called when main window is exiting and we want to detach from
+// any targets we have attached to.
+//
+BOOL fOnExitDetachTargets()
+{
+    CHL_HT_ITERATOR htItr;
+
+    int iTabIndex, keySize, valSize;
+    DWORD dwThreadId;
+    
+    HANDLE hThread = NULL;
+    DWORD dwWaitStatus;
+
+    BOOL fRetVal = TRUE;
+
+    GUIDBGCOMM stGuiDbgComm;
+    
+    if(!fChlDsInitIteratorHT(&htItr))
+    {
+        logerror(pstLogger, L"%s(): fChlDsInitIteratorHT() failed %u", GetLastError());
+        return FALSE;
+    }
+
+    logtrace(pstLogger, L"%s(): Iterating through tab list...", __FUNCTIONW__);
+    while(fChlDsGetNextHT(pTabThreadMap, &htItr, &iTabIndex, &keySize, &dwThreadId, &valSize))
+    {
+        ASSERT(keySize == sizeof(int) && valSize == sizeof(DWORD));
+
+        logtrace(pstLogger, L"Retrieved %d %u", iTabIndex, dwThreadId);
+
+        hThread = OpenThread(SYNCHRONIZE, FALSE, dwThreadId);
+        if(hThread == NULL)
+        {
+            fRetVal = FALSE;
+
+            logerror(pstLogger, L"OpenThread() failed %u", GetLastError());
+            continue;
+        }
+
+        stGuiDbgComm.fFreeThis = FALSE;
+        stGuiDbgComm.GD_fDetachOnDebuggerExit = TRUE;
+
+        // Post message and wait for it to terminate
+        if(!PostThreadMessage(dwThreadId, GD_SESS_DETACH, 0, (LPARAM)&stGuiDbgComm))
+        {
+            fRetVal = FALSE;
+
+            logerror(pstLogger, L"PostThreadMessage() failed %u", GetLastError());
+            continue;
+        }
+
+        logtrace(pstLogger, L"Waiting for thread %u to exit", dwThreadId);
+        dwWaitStatus = WaitForSingleObject(hThread, 5000);
+        if(dwWaitStatus != WAIT_OBJECT_0)
+        {
+            fRetVal = FALSE;
+
+            logwarn(pstLogger, L"Thread %u did not terminate within timeout. Moving on...", dwThreadId);
+
+            // fall through to end of while
+        }
+    }
+
+    return fRetVal;
 }
 
 // fGuiGetOpenFilename()

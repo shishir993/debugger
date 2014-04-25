@@ -166,6 +166,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                     vWriteLog(pstLogger, L"IDM_EXITDEBUGGER");
 
                     // TODO: detach/terminate from all targets being debugged
+
+                    if(!fOnExitDetachTargets())
+                    {
+                        MessageBox(hWnd, L"Error detaching from targets. See log file.", L"Error", MB_ICONEXCLAMATION|MB_OK);
+                    }
+
                     SendMessage(hWnd, WM_CLOSE, 0, 0);
                     return 0;
                 }
@@ -210,7 +216,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             // Continue even if we failed to remove from hash table (next time we insert, it will simply get overwritten)
             vDeleteTabPage(hMainTab, &pstDbgComm->stTabPageInfo);
 
-            vChlMmFree((void**)&pstDbgComm);
+            FREEIF_GUIDBGCOMM(pstDbgComm);
 
             return 0;
         }

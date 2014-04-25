@@ -365,16 +365,33 @@ static void vOnThisThreadExit(PTARGETINFO *ppstTargetInfo)
 
     DWORD dwError = ERROR_SUCCESS;
 
-    // Notify Gui thread of exit
-    if(!fChlMmAlloc((void**)&pstGuiComm, sizeof(GUIDBGCOMM), &dwError))
+    // 20140424: Changed to use async send so that we do not introduce deadlock in the case
+    // where Gui is waiting for this thread to exit before its own exit
+    // The debug thread anyway doesn't care whether Gui processed this message or not
+    // (the debug thread can't really do anything useful even when SendMessage fails).
+    //
+    // Also, do not notify Gui if this exit is from a detach that is due to debugger itself exiting
+    // because this message could be processed by Gui after it processes WM_CLOSE and WM_DESTROY which
+    // is disastrous since all cleanup would have been finished by then.
+    if(!plocal->fDetachOnDebuggerExit)
     {
-        logerror(pstLogger, L"%s(): fChlMmAlloc() failed %u", __FUNCTIONW__, dwError);
-    }
-    else
-    {
-        pstGuiComm->dwThreadID = GetCurrentThreadId();
-        memcpy(&pstGuiComm->stTabPageInfo, &plocal->pstDebugInfoFromGui->stTabPageInfo, sizeof(TABPAGEINFO));
-        SendMessage(plocal->pstDebugInfoFromGui->hMainWindow, DG_SESS_TERM, (WPARAM)plocal->pstDebugInfoFromGui->stTabPageInfo.iTabIndex, (LPARAM)pstGuiComm);
+        // Notify Gui thread of exit
+        if(!fChlMmAlloc((void**)&pstGuiComm, sizeof(GUIDBGCOMM), &dwError))
+        {
+            logerror(pstLogger, L"%s(): fChlMmAlloc() failed %u", __FUNCTIONW__, dwError);
+        }
+        else
+        {
+            pstGuiComm->fFreeThis = TRUE;
+            pstGuiComm->dwThreadID = GetCurrentThreadId();
+            memcpy(&pstGuiComm->stTabPageInfo, &plocal->pstDebugInfoFromGui->stTabPageInfo, sizeof(TABPAGEINFO));
+
+            SendNotifyMessage(
+                plocal->pstDebugInfoFromGui->hMainWindow, 
+                DG_SESS_TERM, 
+                (WPARAM)plocal->pstDebugInfoFromGui->stTabPageInfo.iTabIndex, 
+                (LPARAM)pstGuiComm);
+        }
     }
 
     // Close handles
@@ -392,6 +409,12 @@ static void vOnThisThreadExit(PTARGETINFO *ppstTargetInfo)
     if(plocal->phtDllsLoaded && !fChlDsDestroyHT(plocal->phtDllsLoaded))
     {
         logerror(pstLogger, L"(%s): Unable to destroy DLL hash table", __FUNCTIONW__);
+    }
+
+    // free breakpoint linked list
+    if(plocal->pListBreakpoint && !fBpTerminate(plocal->pListBreakpoint))
+    {
+        logerror(pstLogger, L"(%s): Unable to destroy breakpoint linked list %u", __FUNCTIONW__, GetLastError());
     }
 
     // Free the memory occupied by DEBUGINFO
@@ -412,8 +435,11 @@ static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo)
 
     MSG msg;
 
+    PGUIDBGCOMM pstGuiComm = NULL;
+
     while( PeekMessage(&msg, (HWND)-1, CUSTOM_GDEVENT_START, CUSTOM_GDEVENT_END, PM_REMOVE) )
     {
+        pstGuiComm = (PGUIDBGCOMM)msg.lParam;
         switch(msg.message)
         {
             case GD_TAB_INFOCUS:
@@ -513,6 +539,7 @@ static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo)
 
             case GD_SESS_DETACH:
             {
+                logtrace(pstLogger, L"%s(): Received GD_SESS_DETACH", __FUNCTIONW__);
                 if(!DebugActiveProcessStop(pstTargetInfo->dwPID))
                 {
                     MessageBox(pstTargetInfo->pstDebugInfoFromGui->hMainWindow, L"Cannot detach from target. See log file.", L"Error", MB_ICONERROR);
@@ -520,9 +547,17 @@ static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo)
                 }
                 else
                 {
+                    logtrace(pstLogger, L"%s(): DETACH successful", __FUNCTIONW__);
                     pstTargetInfo->iPrevDebugState = pstTargetInfo->iDebugState;
                     pstTargetInfo->iDebugState = DSTATE_EXIT;
                 }
+
+                if(pstGuiComm)
+                {
+                    pstTargetInfo->fDetachOnDebuggerExit = pstGuiComm->GD_fDetachOnDebuggerExit;
+                    FREEIF_GUIDBGCOMM(pstGuiComm);
+                }
+
                 break;
             }
 
