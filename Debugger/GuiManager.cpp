@@ -612,12 +612,12 @@ BOOL fGuiUpdateThreadsList(HWND hThreadListView, PLV_THREADINFO pstLvThreadInfo,
     WCHAR **ppszStrings;
 
     // Allocate memory to hold WCHAR pointers to the 5 items to display
-    if(!fChlMmAlloc((void**)&ppszStrings, sizeof(WCHAR*) * LV_THREAD_NUMITEMS, NULL))
+    if(!fChlMmAlloc((void**)&ppszStrings, sizeof(WCHAR*) * LV_THREAD_NUMCOLUMNS, NULL))
     {
         return FALSE;
     }
 
-    ASSERT(LV_THREAD_NUMITEMS == 5);
+    ASSERT(LV_THREAD_NUMCOLUMNS == 5);
 
     ppszStrings[0] = szThreadId;
     ppszStrings[1] = szEipLocation;
@@ -633,12 +633,54 @@ BOOL fGuiUpdateThreadsList(HWND hThreadListView, PLV_THREADINFO pstLvThreadInfo,
         swprintf_s(szFunctionName, _countof(szFunctionName), L"0x%08x", pstLvThreadInfo[index].szFunction);
 
         ASSERT(pstLvThreadInfo[index].thType == THTYPE_MAIN || pstLvThreadInfo[index].thType == THTYPE_WORKER);
-        swprintf_s(szType, _countof(szType), L"0x%08x", aszThreadTypes[pstLvThreadInfo[index].thType]);
+        swprintf_s(szType, _countof(szType), L"%s", aszThreadTypes[pstLvThreadInfo[index].thType]);
 
         swprintf_s(szPriority, _countof(szPriority), L"%d", pstLvThreadInfo[index].iThreadPri);
 
         // Insert into list view
-        if(!fChlGuiAddListViewRow(hThreadListView, ppszStrings, LV_THREAD_NUMITEMS))
+        if(!fChlGuiAddListViewRow(hThreadListView, ppszStrings, LV_THREAD_NUMCOLUMNS))
+        {
+            logerror(pstLogger, L"%s(): fChlGuiAddListViewRow failed %u", __FUNCTIONW__, GetLastError());
+            return FALSE;
+        }
+    }
+
+    vChlMmFree((void**)&ppszStrings);
+
+    return TRUE;
+}
+
+BOOL fGuiUpdateRegistersList(HWND hThreadListView, WCHAR *apszNames[], DWORD *padwValues, int nItems)
+{
+    ASSERT(ISVALID_HANDLE(hThreadListView));
+    ASSERT(apszNames);
+    ASSERT(padwValues);
+    ASSERT(nItems > 0);
+
+    int index;
+    WCHAR **ppszStrings;
+
+    WCHAR szName[SLEN_REGISTER_NAME];
+    WCHAR szValue[SLEN_DWORDSTR_HEX];
+
+    // Allocate memory to hold WCHAR pointers to the items to display
+    if(!fChlMmAlloc((void**)&ppszStrings, sizeof(WCHAR*) * LV_REGS_NUMCOLUMNS, NULL))
+    {
+        return FALSE;
+    }
+
+    ASSERT(LV_REGS_NUMCOLUMNS == 2);
+
+    ppszStrings[0] = szName;
+    ppszStrings[1] = szValue;
+
+    for(index = 0; index < nItems; ++index)
+    {
+        swprintf_s(szName, _countof(szName), L"%s", apszNames[index]);
+        swprintf_s(szValue, _countof(szValue), L"0x%08x", padwValues[index]);
+
+        // Insert into list view
+        if(!fChlGuiAddListViewRow(hThreadListView, ppszStrings, LV_REGS_NUMCOLUMNS))
         {
             logerror(pstLogger, L"%s(): fChlGuiAddListViewRow failed %u", __FUNCTIONW__, GetLastError());
             return FALSE;

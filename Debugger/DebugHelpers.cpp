@@ -1,5 +1,6 @@
 
 #include "Inc\DebugHelpers.h"
+#include "Inc\MenuItems.h"
 #include "Inc\Breakpoint.h"
 #include "Inc\GuiManager.h"
 
@@ -262,8 +263,7 @@ BOOL fHandleExceptionBreakpoint(PTARGETINFO pstTargetInfo, __out PDWORD pdwConti
         pstTargetInfo->stPrevBpInfo.dwThreadId = pstTargetInfo->lpDebugEvent->dwThreadId;
         memcpy(&pstTargetInfo->stPrevBpInfo.stBpInfo, &stBpInfo, sizeof(BPINFO));
 
-        pstTargetInfo->iPrevDebugState = pstTargetInfo->iDebugState;
-        pstTargetInfo->iDebugState = DSTATE_BREAKPOINTWAIT;
+        vDebuggerStateChange(pstTargetInfo, DSTATE_BREAKPOINTWAIT);
     }
     else if(stBpInfo.iBpType & BPTYPE_DEBUGGERSINGLEHIT || stBpInfo.iBpType & BPTYPE_DEBUGGERMULTIHIT)
     {
@@ -416,9 +416,6 @@ BOOL fUpdateThreadsListView(HWND hList, CHL_HTABLE *phtThreads, HANDLE hMainThre
     int nThreads;
     PLV_THREADINFO pstThreadInfo = NULL;
 
-    DWORD dwEip;
-    int iThreadPri;
-
     CONTEXT stContext;
 
     // Create memory to hold thread info for display
@@ -448,6 +445,8 @@ BOOL fUpdateThreadsListView(HWND hList, CHL_HTABLE *phtThreads, HANDLE hMainThre
             dbgwprintf(L"%s(): GetThreadPriority() failed for id = %u, handle = 0x%08x", __FUNCTIONW__, dwThreadID, pThreadDbgInfo->hThread);
             logwarn(pstLogger, L"%s(): GetThreadContext() failed for id = %u, handle = 0x%08x", __FUNCTIONW__, dwThreadID, pThreadDbgInfo->hThread);
             pstThreadInfo[nThreads].dwEIPLocation = 0;
+
+            fRetVal = FALSE;
         }
         else
         {
@@ -463,6 +462,8 @@ BOOL fUpdateThreadsListView(HWND hList, CHL_HTABLE *phtThreads, HANDLE hMainThre
         {
             dbgwprintf(L"%s(): GetThreadPriority() failed for id = %u, handle = 0x%08x", __FUNCTIONW__, dwThreadID, pThreadDbgInfo->hThread);
             logwarn(pstLogger, L"%s(): GetThreadPriority() failed for id = %u, handle = 0x%08x", __FUNCTIONW__, dwThreadID, pThreadDbgInfo->hThread);
+
+            fRetVal = FALSE;
         }
 
         pstThreadInfo[nThreads].szFunction[0] = 0;
@@ -471,9 +472,154 @@ BOOL fUpdateThreadsListView(HWND hList, CHL_HTABLE *phtThreads, HANDLE hMainThre
     }
 
     // Update listview
-    fRetVal = fGuiUpdateThreadsList(hList, pstThreadInfo, nThreads);
+    fRetVal &= fGuiUpdateThreadsList(hList, pstThreadInfo, nThreads);
 
     vChlMmFree((void**)&pstThreadInfo);
 
     return fRetVal;
+}
+
+BOOL fUpdateRegistersListView(HWND hList, DWORD dwThreadId)
+{
+    ASSERT(ISVALID_HANDLE(hList));
+    ASSERT(dwThreadId > 0);
+
+    CONTEXT stContext;
+    HANDLE hThread = NULL;
+
+    DWORD adwValues[_countof(apszRegNames)];
+
+    ASSERT(_countof(apszRegNames) == 9);
+
+    hThread = OpenThread(THREAD_GET_CONTEXT, FALSE, dwThreadId);
+    if(hThread == NULL)
+    {
+        logerror(pstLogger, L"%s(): OpenThread() failed %u", __FUNCTIONW__, GetLastError());
+        return FALSE;
+    }
+
+    stContext.ContextFlags = CONTEXT_INTEGER | CONTEXT_CONTROL;
+    if(!GetThreadContext(hThread, &stContext))
+    {
+        logerror(pstLogger, L"%s(): GetThreadContext() failed %u", __FUNCTIONW__, GetLastError());
+        CloseHandle(hThread);
+        return FALSE;
+    }
+
+    CloseHandle(hThread);
+
+    adwValues[0] = stContext.Eax;
+    adwValues[1] = stContext.Ebx;
+    adwValues[2] = stContext.Ecx;
+    adwValues[3] = stContext.Edx;
+    adwValues[4] = stContext.Esi;
+    adwValues[5] = stContext.Edi;
+    adwValues[6] = stContext.Esp;
+    adwValues[7] = stContext.Ebp;
+    adwValues[8] = stContext.Eip;
+
+    return fGuiUpdateRegistersList(hList, apszRegNames, adwValues, _countof(apszRegNames));
+}
+
+// This function must be called whenever the state of the debugger must be changed,
+// i.e., of pstTargetInfo->iDebugState must be changed. This function is required
+// because on state change, there are certain UI updates that is to be undertaken.
+// 
+void vDebuggerStateChange(PTARGETINFO pstTargetInfo, int iNewState)
+{
+    ASSERT(pstTargetInfo);
+    ASSERT(iNewState >= DSTATE_START && iNewState <= DSTATE_END);
+
+    /*
+     * For now, handle these state changes:
+     * running -> debugging
+     * debugging -> running
+     */
+
+    int iOlderState = pstTargetInfo->iPrevDebugState;
+    int iCurState = pstTargetInfo->iDebugState;
+
+    ASSERT(iCurState != iNewState);
+
+    DBG_UNREFERENCED_LOCAL_VARIABLE(iOlderState);
+
+    switch(iNewState)
+    {
+        case DSTATE_RUNNING:
+        {
+            // Clear/Gray-out all child controls in the tab page
+            // because that information is not valid when target is running
+
+            break;
+        }
+        
+        case DSTATE_DEBUGGING:
+        //case DSTATE_BREAKPOINTWAIT:   // same as DSTATE_DEBUGGING
+        //case DSTATE_SINGLESTEP_BEFORE:
+        {
+            // Update UI to have updated target information displayed
+            
+            // 1. Update threads information
+            if(!fUpdateThreadsListView(
+                    pstTargetInfo->pstDebugInfoFromGui->stTabPageInfo.hListThreads, 
+                    pstTargetInfo->phtThreads,
+                    pstTargetInfo->stProcessInfo.hThread))
+            {
+                logerror(pstLogger, L"%s(): fUpdateThreadsListView failed %u", __FUNCTIONW__, GetLastError());
+
+                // TODO: bubble up the error or show MessageBox?
+            }
+
+            // 2. Update CPU register values
+            // TODO: handle error
+            fUpdateRegistersListView(
+                pstTargetInfo->pstDebugInfoFromGui->stTabPageInfo.hListRegisters,
+                pstTargetInfo->stPrevBpInfo.dwThreadId);
+
+            break;
+        }
+    }
+
+    pstTargetInfo->iPrevDebugState = iCurState;
+    pstTargetInfo->iDebugState = iNewState;
+
+    // Set menu item states
+    vSetMenuItemsState(pstTargetInfo);
+
+    return;
+}
+
+void vSetMenuItemsState(PTARGETINFO pstTargetInfo)
+{
+    ASSERT(pstTargetInfo);
+
+    switch(pstTargetInfo->iDebugState)
+    {
+        case DSTATE_INVALID:
+        case DSTATE_EXIT:
+        {
+            vMiDebugSessionEnd(pstTargetInfo->pstDebugInfoFromGui->hMainMenu);
+            break;
+        }
+
+        case DSTATE_RUNNING:
+        {
+            vMiDebuggerRunning(pstTargetInfo->pstDebugInfoFromGui->hMainMenu);
+            break;
+        }
+
+        case DSTATE_DEBUGGING:
+        //case DSTATE_SINGLESTEP_BEFORE:    // same as DSTATE_DEBUGGING
+        //case DSTATE_BREAKPOINTWAIT:
+        {
+            vMiDebuggerDebugging(pstTargetInfo->pstDebugInfoFromGui->hMainMenu);
+            break;
+        }
+
+        default:
+        {
+            ASSERT(FALSE);
+            break;
+        }
+    }
 }

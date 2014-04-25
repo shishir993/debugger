@@ -5,7 +5,6 @@
 #include "Common.h"
 #include "UICreator.h"
 #include "CHelpLibDll.h"
-#include "MenuItems.h"
 #include "Breakpoint.h"
 #include "DebugCommon.h"
 

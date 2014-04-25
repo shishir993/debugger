@@ -12,7 +12,6 @@ static BOOL fDebugActiveProcess(PTARGETINFO pstTargetInfo);
 static void vOnThisThreadExit(PTARGETINFO *ppstTargetInfo);
 static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo);
 static BOOL fProcessDebugEventLoop(PTARGETINFO pstTargetInfo);
-static void vSetMenuItemsState(PTARGETINFO pstTargetInfo);
 
 // Debug event handlers
 BOOL fOnException(PTARGETINFO pstTargetInfo, __out DWORD *pdwContinueStatus);
@@ -92,8 +91,8 @@ DWORD WINAPI dwDebugThreadEntry(LPVOID lpvArgs)
             }
             // Fall through
             case DSTATE_DEBUGGING:
-            case DSTATE_SINGLESTEP_BEFORE:
-            case DSTATE_BREAKPOINTWAIT:
+            //case DSTATE_SINGLESTEP_BEFORE:
+            //case DSTATE_BREAKPOINTWAIT:
             {
                 continue;
             }
@@ -605,28 +604,6 @@ static BOOL fProcessDebugEventLoop(PTARGETINFO pstTargetInfo)
                 {
                     DWORD dwContinueStatus;
 
-                    HANDLE hCurThread = NULL;
-                    CONTEXT stThreadContext;
-
-                    //if(!fGetThreadHandle(pstTargetInfo->phtThreads, de.dwThreadId, &hCurThread))
-                    //{
-                    //    logerror(pstLogger, L"%s(): Cannot get thread handle for thread %u", __FUNCTIONW__, de.dwThreadId);
-                    //}
-                    //else
-                    //{
-                    //    ZeroMemory(&stThreadContext, sizeof(CONTEXT));
-
-                    //    stThreadContext.ContextFlags = CONTEXT_FULL; // this is CONTEXT_INTEGER | CONTEXT_CONTROL | CONTEXT_SEGMENTS;
-                    //    if(!GetThreadContext(hCurThread, &stThreadContext))
-                    //    {
-                    //        logerror(pstLogger, L"%s(): GetThreadContext failed %u", __FUNCTIONW__, GetLastError());
-                    //    }
-                    //    else
-                    //    {
-                    //        
-                    //    }
-                    //}
-
                     fOnException(pstTargetInfo, &dwContinueStatus);
 
                     ASSERT(dwContinueStatus == DBG_CONTINUE || dwContinueStatus == DBG_CONTCUSTOM_ABORT ||
@@ -660,15 +637,14 @@ static BOOL fProcessDebugEventLoop(PTARGETINFO pstTargetInfo)
                          */
 
                         // Check the iDebugState
-                        if(pstTargetInfo->iDebugState == DSTATE_BREAKPOINTWAIT || pstTargetInfo->iDebugState == DSTATE_SINGLESTEP_BEFORE)
+                        if(pstTargetInfo->iDebugState != DSTATE_BREAKPOINTWAIT && pstTargetInfo->iDebugState != DSTATE_SINGLESTEP_BEFORE)
                         {
-                            // for now, show that we have hit a breakpoint and return
-                            dbgwprintf(L"Entering debugging mode due to exception(0x%08x) at 0x%08x\n", de.u.Exception.ExceptionRecord.ExceptionCode, de.u.Exception.ExceptionRecord.ExceptionAddress);
-                            vSetMenuItemsState(pstTargetInfo);
+                            ContinueDebugEvent(de.dwProcessId, de.dwThreadId, dwContinueStatus);
                         }
                         else
                         {
-                            ContinueDebugEvent(de.dwProcessId, de.dwThreadId, dwContinueStatus);
+                            // for now, show that we have hit a breakpoint and return
+                            dbgwprintf(L"Entering debugging mode due to exception(0x%08x) at 0x%08x\n", de.u.Exception.ExceptionRecord.ExceptionCode, de.u.Exception.ExceptionRecord.ExceptionAddress);
                         }
                     }
                 
@@ -1135,38 +1111,4 @@ BOOL fOnOutputDebugString(PTARGETINFO pstTargetInfo)
     }
 
     return TRUE;
-}
-
-static void vSetMenuItemsState(PTARGETINFO pstTargetInfo)
-{
-    ASSERT(pstTargetInfo);
-
-    switch(pstTargetInfo->iDebugState)
-    {
-        case DSTATE_INVALID:
-        {
-            vMiDebugSessionEnd(pstTargetInfo->pstDebugInfoFromGui->hMainMenu);
-            break;
-        }
-
-        case DSTATE_RUNNING:
-        {
-            vMiDebuggerRunning(pstTargetInfo->pstDebugInfoFromGui->hMainMenu);
-            break;
-        }
-
-        case DSTATE_DEBUGGING:
-        case DSTATE_SINGLESTEP_BEFORE:
-        case DSTATE_BREAKPOINTWAIT:
-        {
-            vMiDebuggerDebugging(pstTargetInfo->pstDebugInfoFromGui->hMainMenu);
-            break;
-        }
-
-        default:
-        {
-            ASSERT(FALSE);
-            break;
-        }
-    }
 }

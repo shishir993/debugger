@@ -22,5 +22,6 @@ BOOL CALLBACK fGetProcIdDP(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam
 BOOL CALLBACK fGetNewProgramDP(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
 
 BOOL fGuiUpdateThreadsList(HWND hThreadListView, PLV_THREADINFO pstLvThreadInfo, int nItems);
+BOOL fGuiUpdateRegistersList(HWND hThreadListView, WCHAR *apszNames[], DWORD *padwValues, int nItems);
 
 #endif // _GUIMANAGER_H

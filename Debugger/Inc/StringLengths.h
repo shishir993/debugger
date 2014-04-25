@@ -16,4 +16,6 @@
 
 #define SLEN_DWORDSTR_HEX   16  // DWORD value represented in hex with leading 0x
 
+#define SLEN_REGISTER_NAME  8
+
 #endif // _STRINGLENGTHS_H

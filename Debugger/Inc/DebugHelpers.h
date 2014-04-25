@@ -17,14 +17,19 @@ BOOL fSuspendAllThreads(CHL_HTABLE *phtThreads);
 BOOL fResumeAllThreads(CHL_HTABLE *phtThreads);
 BOOL fIsNtDllLoaded(CHL_HTABLE *phtDllTable, __out DWORD *pdwBaseAddress);
 
+// Breakpoint functions
 BOOL fBreakAtEntryPoint(PTARGETINFO pstTargetInfo);
 BOOL fHandleExceptionBreakpoint(PTARGETINFO pstTargetInfo, __out PDWORD pdwContinueStatus);
+BOOL fDecrementInstPointer(CHL_HTABLE *phtThreads, DWORD dwThreadId);
 
 void vSetContinueStatusFromUser(DWORD dwExceptionCode, DWORD dwExceptionAddress, BOOL fFirstChance, PDWORD pdwContinueStatus);
 
-BOOL fDecrementInstPointer(CHL_HTABLE *phtThreads, DWORD dwThreadId);
+// Debugger state changes
+void vSetMenuItemsState(PTARGETINFO pstTargetInfo);
+void vDebuggerStateChange(PTARGETINFO pstTargetInfo, int iNewState);
 
 // Gui management
-BOOL fUpdateThreadsListView(HWND hList, CHL_HTABLE *phtThreads);
+BOOL fUpdateThreadsListView(HWND hList, CHL_HTABLE *phtThreads, HANDLE hMainThread);
+BOOL fUpdateRegistersListView(HWND hList, DWORD dwThreadId);
 
 #endif // _DEBUGTHREADHELPERS_H
