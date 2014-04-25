@@ -26,7 +26,7 @@ static BOOL fStartDebugSession(HWND hMainWindow, struct _DbgSessionStart *pstSes
 static BOOL fSendMessageDebugThread(int iCurIndex, DWORD dwMsgToSend, PGUIDBGCOMM pstCommInfo);
 
 
-LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM lParam)
+LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     DWORD dwError = ERROR_SUCCESS;
 
@@ -40,21 +40,21 @@ LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM l
             fCreateConsoleWindow();
 #endif
 
-            if(!fCreateMainTabControl(hMainWindow, &hMainTab, &dwError))
+            if(!fCreateMainTabControl(hWnd, &hMainTab, &dwError))
             {
                 vWriteLog(pstLogger, L"%s(): Cannot create main control: %d", __FUNCTIONW__, dwError);
-                SendMessage(hMainWindow, WM_CLOSE, 0, 0);
+                SendMessage(hWnd, WM_CLOSE, 0, 0);
             }
             else
             {
-                hMainMenu = GetMenu(hMainWindow);
+                hMainMenu = GetMenu(hWnd);
                 vMiDebuggerInit(hMainMenu);
             }
 
             if(!fGuiInitialize(&dwError))
             {
                 logerror(pstLogger, L"%s(): Cannot initialize Gui module: %d", __FUNCTIONW__, dwError);
-                SendMessage(hMainWindow, WM_CLOSE, 0, 0);
+                SendMessage(hWnd, WM_CLOSE, 0, 0);
             }
 
             return 0;
@@ -111,14 +111,14 @@ LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM l
                     // Init struct
                     stSessionInfo.szTargetPath[0] = 0;
 
-                    DialogBoxParam(g_hMainInstance, MAKEINTRESOURCE(IDD_OPENPROGRAM), hMainWindow, fGetNewProgramDP, (LPARAM)&stSessionInfo);
+                    DialogBoxParam(g_hMainInstance, MAKEINTRESOURCE(IDD_OPENPROGRAM), hWnd, fGetNewProgramDP, (LPARAM)&stSessionInfo);
                     if(stSessionInfo.szTargetPath[0] == 0)
                     {
                         logwarn(pstLogger, L"%s(): Did not get target path to debug from dialog box. Last error = %u", __FUNCTIONW__, GetLastError());
                     }
                     else
                     {
-                        fStartDebugSession(hMainWindow, &stSessionInfo, &dwError);
+                        fStartDebugSession(hWnd, &stSessionInfo, &dwError);
                     }
                     return 0;
                 }
@@ -130,14 +130,14 @@ LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM l
                     // Init struct
                     stSessionInfo.dwTargetPID = 0;
 
-                    DialogBoxParam(g_hMainInstance, MAKEINTRESOURCE(IDD_GETPROCID), hMainWindow, fGetProcIdDP, (LPARAM)&stSessionInfo);
+                    DialogBoxParam(g_hMainInstance, MAKEINTRESOURCE(IDD_GETPROCID), hWnd, fGetProcIdDP, (LPARAM)&stSessionInfo);
                     if(stSessionInfo.dwTargetPID == 0)
                     {
                         logwarn(pstLogger, L"%s(): Did not get PID to debug from dialog box. Last error = %u", __FUNCTIONW__, GetLastError());
                     }
                     else
                     {
-                        fStartDebugSession(hMainWindow, &stSessionInfo, &dwError);
+                        fStartDebugSession(hWnd, &stSessionInfo, &dwError);
                     }
                     return 0;
                 }
@@ -166,7 +166,7 @@ LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM l
                     vWriteLog(pstLogger, L"IDM_EXITDEBUGGER");
 
                     // TODO: detach/terminate from all targets being debugged
-                    SendMessage(hMainWindow, WM_CLOSE, 0, 0);
+                    SendMessage(hWnd, WM_CLOSE, 0, 0);
                     return 0;
                 }
 
@@ -217,7 +217,7 @@ LRESULT CALLBACK WndProc(HWND hMainWindow, UINT message, WPARAM wParam, LPARAM l
 
     }
 
-    return DefWindowProc(hMainWindow, message, wParam, lParam);
+    return DefWindowProc(hWnd, message, wParam, lParam);
 }
 
 static BOOL fStartDebugSession(HWND hMainWindow, struct _DbgSessionStart *pstSessionInfo, __out DWORD *pdwErrCode)

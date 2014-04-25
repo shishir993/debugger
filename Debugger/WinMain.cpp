@@ -4,6 +4,9 @@
 #include "Inc\UICommon.h"
 #include "Inc\Logger.h"
 
+#define WNDSIZE_WIDTH       1024
+#define WNDSIZE_HEIGHT      768
+
 HINSTANCE g_hMainInstance;
 
 LOGGER StLogger;
@@ -63,8 +66,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR szCmdLine,
 						WS_SYSMENU,				// window style
 						CW_USEDEFAULT,			// initial X position
 						CW_USEDEFAULT,			// initial Y position
-						1366,					// initial X size
-						768,					// initial Y size
+						WNDSIZE_WIDTH,					// initial X size
+						WNDSIZE_HEIGHT,					// initial Y size
 						NULL,					// parent window handle
 						NULL,					// window menu handle
 						g_hMainInstance,		// program instance handle

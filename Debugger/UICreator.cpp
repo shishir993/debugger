@@ -83,7 +83,7 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
     ScreenToClient(hTab, (LPPOINT)&rcTabDisplay.left);
     ScreenToClient(hTab, (LPPOINT)&rcTabDisplay.right);
 
-    // Calculate width for the text 'Command:' without quotes
+    // Calculate width for the text static 'Command:' (without quotes) and the edit control
     WCHAR szTextCommand[] = L"Command:";
     int iTextWidth, iTextHeight;
     
@@ -101,21 +101,14 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
     int xMax = rcTabDisplay.right;
     int yMax = rcTabDisplay.bottom;
 
-    int x50 = xMax * 0.5;
-    int y75 = yMax * 0.75;
-    int y35 = yMax * 0.35;
-    int y55 = yMax * 0.55;
-    int y85 = yMax * 0.85;
+    int tabWidth = xMax - x0;
+    int tabHeight = yMax - y0;
 
-    int liHeight = (yMax - iCursorHeight) * 0.33;
+    int liHeight = (tabHeight - iCursorHeight) * 0.33;
 
-    int w50 = x50;          // width 1/2
-    int h75 = y75;          // height 3/4
-    int h25 = yMax - y75;   // height 1/4
-    int h35 = y35;          // height 35/100
-    int h20 = y55 - y35;
-    int h30 = y85 - y55;
-    int h15 = yMax - y85;
+    int w50 = tabWidth / 2;             // width 1/2
+    int h75 = tabHeight * 0.75;         // height 3/4
+    int h25 = tabHeight - h75;          // height 1/4
 
     // Create the disass window
     hEditDisass = CreateWindow( 
@@ -140,7 +133,7 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                                 WC_LISTVIEW,
                                 NULL,
                                 WS_CHILD | WS_BORDER | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_ALIGNLEFT,
-                                x50,
+                                x0 + w50,
                                 y0,
                                 w50,
                                 liHeight,
@@ -158,7 +151,7 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                                     WC_LISTVIEW,
                                     NULL,
                                     WS_CHILD | WS_BORDER | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_ALIGNLEFT,
-                                    x50,
+                                    x0 + w50,
                                     y0 + liHeight,
                                     w50,
                                     liHeight,
@@ -181,7 +174,7 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                                     WC_LISTVIEW,
                                     NULL,
                                     WS_CHILD | WS_BORDER | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_ALIGNLEFT,
-                                    x50,
+                                    x0 + w50,
                                     y0 + liHeight + liHeight,
                                     w50,
                                     liHeight,
@@ -205,9 +198,9 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                                     WC_STATIC,
                                     NULL,
                                     WS_CHILD | WS_BORDER | WS_VISIBLE,
-                                    x50,
+                                    x0 + w50,
                                     yMax - iCursorHeight,
-                                    iTextWidth + 2,
+                                    iTextWidth,
                                     iCursorHeight,
                                     hTab,
                                     NULL,
@@ -222,7 +215,7 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                                 WC_EDIT,
                                 NULL,
                                 WS_CHILD | WS_BORDER | WS_VISIBLE | ES_LEFT,
-                                x50 + iTextWidth + 2,
+                                x0 + w50 + iTextWidth + 2,
                                 yMax - iCursorHeight,
                                 w50 - iTextWidth - 2,
                                 iCursorHeight,
@@ -239,7 +232,7 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                                 NULL,
                                 WS_CHILD | WS_BORDER | WS_VISIBLE,
                                 x0,
-                                y75,
+                                y0 + h75,
                                 w50,
                                 h25,
                                 hTab,
