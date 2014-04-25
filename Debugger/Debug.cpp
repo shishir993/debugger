@@ -80,7 +80,8 @@ DWORD WINAPI dwDebugThreadEntry(LPVOID lpvArgs)
     // Execute loop while we have either GUI messages or debug event loop to process
     while(fContinueProcessing)
     {
-        fContinueProcessing = fProcessGuiMessage(pstTargetInfo);
+        // This returns TRUE always, for now
+        fProcessGuiMessage(pstTargetInfo);
 
         // Decide whether to run the debug event loop based on value of iDebugState
         switch(pstTargetInfo->iDebugState)
@@ -97,9 +98,16 @@ DWORD WINAPI dwDebugThreadEntry(LPVOID lpvArgs)
                 continue;
             }
 
+            case DSTATE_EXIT:
+            {
+                fContinueProcessing = FALSE;
+                break;
+            }
+
             default:
             {
                 fContinueProcessing = fProcessDebugEventLoop(pstTargetInfo);
+                break;
             }
         }
     }
@@ -512,7 +520,8 @@ static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo)
                 }
                 else
                 {
-                    goto gui_exit;
+                    pstTargetInfo->iPrevDebugState = pstTargetInfo->iDebugState;
+                    pstTargetInfo->iDebugState = DSTATE_EXIT;
                 }
                 break;
             }
@@ -531,9 +540,6 @@ static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo)
     }
     
     return TRUE;
-
-gui_exit:
-    return FALSE;
 }
 
 static BOOL fProcessDebugEventLoop(PTARGETINFO pstTargetInfo)

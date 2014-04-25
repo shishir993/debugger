@@ -40,6 +40,8 @@ void vMiDebugSessionEnd(HMENU hMenu)
 
 void vMiDebuggerRunning(HMENU hMenu)
 {
+    vOpenProgramProcess(hMenu, MF_GRAYED);
+
     EnableMenuItem(hMenu, IDM_TERMINATETARGET, MF_ENABLED);
     EnableMenuItem(hMenu, IDM_DETACHFROMTARGET, MF_ENABLED);
     EnableMenuItem(hMenu, IDM_DUMPANDTERMINATETARGET, MF_ENABLED);

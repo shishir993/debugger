@@ -26,6 +26,12 @@
 // let target process continue execution when in this state
 #define DSTATE_BREAKPOINTWAIT           6
 
+// Set by the Gui message loop handler or the debug event loop handler
+// indicating that the debug thread must exit now. This will be used 
+// when the target process exits(either by itself or we killed it) or
+// we detach from it.
+#define DSTATE_EXIT                     7
+
 // Action the user specified when an unexpected BP was encountered
 #define DBG_CONTCUSTOM_ABORT  10
 #define DBG_CONTCUSTOM_BREAK  11
