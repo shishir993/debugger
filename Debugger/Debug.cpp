@@ -464,8 +464,7 @@ static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo)
                 }
 
                 // Change debugger state
-                pstTargetInfo->iPrevDebugState = pstTargetInfo->iDebugState;
-                pstTargetInfo->iDebugState = DSTATE_RUNNING;
+                vDebuggerStateChange(pstTargetInfo, DSTATE_RUNNING);
 
                 // Continue debug event
                 if(!ContinueDebugEvent(pstTargetInfo->dwPID, pstTargetInfo->stPrevBpInfo.dwThreadId, DBG_CONTINUE))
