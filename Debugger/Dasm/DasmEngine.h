@@ -386,94 +386,129 @@ typedef INT		OPRTYPE_RETVAL;		// return type of GetOperandFrom*()
  * structures
  */
 
-// struct to hold the various parts of an instruction
-typedef struct _InsSplit {
+typedef struct _DasmState {
 
-	/* 
-	 * The boolean values indicate whether the corresponding field 
-	 * is used in the instruction or not.
-	 */
-	BOOL fPrefix;
-	BOOL fModRM;
-	BOOL fSIB;
-	BOOL fDisp;
-	BOOL fImm;
-	BOOL fImmSignEx;			// sign-extend the imm value??
-	BOOL fCodeOffset;
-	BOOL fDataOffset;			// MOV AL,moffs8 ... ds:[offset]
-	BOOL fSpecialInstruction;	// specimens like ARPL, BOUND, MOVSX!!
-	BOOL fSSEIns;				// Is this an SSE instruction? To handle printing of prefixes.
-	BOOL fWBitAbsent;			// Not all instructions have a w-bit: BSF doesn't
+    INT structInitialized;
 
-	/*
-	 * length of each field
-	 */
-	BYTE nPrefix;	// 0-4 prefixes of 1byte each. Ignore if fPrefix == FALSE.
-	BYTE nDisp;		// 0-4 bytes. Ignore if fDisp == FALSE.
-	BYTE nImm;		// 0-4 bytes. Ignore if fImm == FALSE.
+    // struct to hold the various parts of an instruction
+    struct _InsSplit {
 
-	/*
-	 * types
-	 */
-	WORD wPrefixTypes;
-	BYTE bImmType;		// 8/16/32 bits
-	BYTE bDispType;
-	BYTE bModRMType;	// ModRM+Reg / ModRM+OpcodeExtension
-	//BYTE bSplInsType;	// MOV
-	OPRTYPE_RETVAL OprTypeSrc;	// Set by MODRM state and used by DUMP state to
-	OPRTYPE_RETVAL OprTypeDes;	// properly print the instruction string.
+	    /* 
+	     * The boolean values indicate whether the corresponding field 
+	     * is used in the instruction or not.
+	     */
+	    BOOL fPrefix;
+	    BOOL fModRM;
+	    BOOL fSIB;
+	    BOOL fDisp;
+	    BOOL fImm;
+	    BOOL fImmSignEx;			// sign-extend the imm value??
+	    BOOL fCodeOffset;
+	    BOOL fDataOffset;			// MOV AL,moffs8 ... ds:[offset]
+	    BOOL fSpecialInstruction;	// specimens like ARPL, BOUND, MOVSX!!
+	    BOOL fSSEIns;				// Is this an SSE instruction? To handle printing of prefixes.
+	    BOOL fWBitAbsent;			// Not all instructions have a w-bit: BSF doesn't
 
-	// Some instructions like ARPL/BOUND have a defined operand size which doesn't
-	// depend on either the 'w' bit or the opsize override prefix.
+	    /*
+	     * length of each field
+	     */
+	    BYTE nPrefix;	// 0-4 prefixes of 1byte each. Ignore if fPrefix == FALSE.
+	    BYTE nDisp;		// 0-4 bytes. Ignore if fDisp == FALSE.
+	    BYTE nImm;		// 0-4 bytes. Ignore if fImm == FALSE.
 
-	// Also, instructions like MOVSX, MOVZX have different sized source and destination operands.
+	    /*
+	     * types
+	     */
+	    WORD wPrefixTypes;
+	    BYTE bImmType;		// 8/16/32 bits
+	    BYTE bDispType;
+	    BYTE bModRMType;	// ModRM+Reg / ModRM+OpcodeExtension
+	    //BYTE bSplInsType;	// MOV
+	    OPRTYPE_RETVAL OprTypeSrc;	// Set by MODRM state and used by DUMP state to
+	    OPRTYPE_RETVAL OprTypeDes;	// properly print the instruction string.
+
+	    // Some instructions like ARPL/BOUND have a defined operand size which doesn't
+	    // depend on either the 'w' bit or the opsize override prefix.
+
+	    // Also, instructions like MOVSX, MOVZX have different sized source and destination operands.
 	
-	// For these instructions, fSpecialInstruction will be TRUE so that MODRM state
-	// can check the operand size and then continue.
-	BYTE bOperandSizeSrc;
-	BYTE bOperandSizeDes;
+	    // For these instructions, fSpecialInstruction will be TRUE so that MODRM state
+	    // can check the operand size and then continue.
+	    BYTE bOperandSizeSrc;
+	    BYTE bOperandSizeDes;
 
-	// reg/sreg/splReg
-	// For example: MOV r/m16,Sreg
-	BYTE bRegTypeSrc;
-	BYTE bRegTypeDest;
+	    // reg/sreg/splReg
+	    // For example: MOV r/m16,Sreg
+	    BYTE bRegTypeSrc;
+	    BYTE bRegTypeDest;
 
-	// Boolean to determine whether the source and destination
-	// operand strings(part of the instruction) was already written
-	// in the previous states or not.
-	BOOL fSrcStrSet;
-	BOOL fDesStrSet;
-	BOOL fOpr3StrSet;
+	    // Boolean to determine whether the source and destination
+	    // operand strings(part of the instruction) was already written
+	    // in the previous states or not.
+	    BOOL fSrcStrSet;
+	    BOOL fDesStrSet;
+	    BOOL fOpr3StrSet;
 
-	/*
-	 * individual fields
-	 */
-	BYTE	bDBit;
-	BYTE	bWBit;
-	BYTE	bModRM;
-	BYTE	bSIB;
-	BYTE	abPrefixes[MAX_PREFIXES];
-	INT		iDisp;	// Max of 32bit disp
-	INT		iImm;	// Max of 32bit imm value
+	    /*
+	     * individual fields
+	     */
+	    BYTE	bDBit;
+	    BYTE	bWBit;
+	    BYTE	bModRM;
+	    BYTE	bSIB;
+	    BYTE	abPrefixes[MAX_PREFIXES];
+	    INT		iDisp;	// Max of 32bit disp
+	    INT		iImm;	// Max of 32bit imm value
 
-	// Strings to store the instruction strings to be dumped later in DUMP state
-	WCHAR wszPrefixes[MAX_PREFIX_STR_LEN+1];
-	WCHAR wszCurInsStrSrc[MAX_INS_OP_STR_LEN+1];
-	WCHAR wszCurInsStrDes[MAX_INS_OP_STR_LEN+1];
-	WCHAR wszCurInsStrOpr3[MAX_INS_OP_STR_LEN+1];	// Shift/Rotate instructions with 'cl'/'1' as third operand
-	WCHAR *pwszPtrStr;		// "byte ptr" / "word ptr" / ...
-	WCHAR *pwszEffAddrReg1;	// one of the GP/C/D registers	- source
-	WCHAR *pwszEffAddrReg2;	// one of the GP/C/D registers	- destination
+	    // Strings to store the instruction strings to be dumped later in DUMP state
+	    WCHAR wszPrefixes[MAX_PREFIX_STR_LEN+1];
+	    WCHAR wszCurInsStrSrc[MAX_INS_OP_STR_LEN+1];
+	    WCHAR wszCurInsStrDes[MAX_INS_OP_STR_LEN+1];
+	    WCHAR wszCurInsStrOpr3[MAX_INS_OP_STR_LEN+1];	// Shift/Rotate instructions with 'cl'/'1' as third operand
+	    WCHAR *pwszPtrStr;		// "byte ptr" / "word ptr" / ...
+	    WCHAR *pwszEffAddrReg1;	// one of the GP/C/D registers	- source
+	    WCHAR *pwszEffAddrReg2;	// one of the GP/C/D registers	- destination
 
-	// SIB info
-	WCHAR wszScaleIndex[MAX_INS_OP_STR_LEN+1];
-	WCHAR wszBase[MAX_INS_OP_STR_LEN+1];
+	    // SIB info
+	    WCHAR wszScaleIndex[MAX_INS_OP_STR_LEN+1];
+	    WCHAR wszBase[MAX_INS_OP_STR_LEN+1];
 
-	// Function pointer to the CALLBACK function to be called
-	// before jumping to the DUMP state.
-	void (*fpvCallback)();
+	    // Function pointer to the CALLBACK function to be called
+	    // before jumping to the DUMP state.
+	    void (*fpvCallback)(struct _DasmState*);
 
-}INS_SPLIT;
+    }insCurIns;
+
+    PBYTE pbCurrentCodePtr;
+
+    // No. of bytes in the current instruction; used to dump
+    // hex bytes by subtracting this from pbCurrentCodePtr
+    INT nBytesCurIns;
+
+    // Variables to store the whole opcode, high and low 4bits of the opcode
+    BYTE bFullOpcode;
+    BYTE bOpcodeLow;
+    BYTE bOpcodeHigh;
+
+    // Used only by FPU instructions
+    BYTE bFPUModRM;
+    BYTE bFPUReg;
+
+    // Strings that are used to hold the asm instruction after disassembly
+    WCHAR wszCurInsStr[MAX_INS_STRLEN+1];
+    WCHAR wszCurInsTempStr[MAX_INS_STRLEN+1];
+
+    LONG lDelta;
+    DASM_STATE dsNextState;
+    BOOL fRunning;
+
+    // When disassembling one instruction at a time, this will store
+    // the disassembled instruction when returning back to caller
+    WCHAR szDisassembledInst[MAX_INS_STRLEN+1];
+
+}DASMSTATE, *PDASMSTATE;
+
+typedef struct _InsSplit INS_SPLIT;
 
 /* end of structures */
 
@@ -483,131 +518,143 @@ typedef struct _InsSplit {
 BOOL fDisassembler(NCODE_LOCS *pCodeLocs, DWORD dwVirtCodeBase);
 BOOL fDoDisassembly(DWORD *pdwCodeSection, DWORD dwSizeOfCodeSection,
 					DWORD dwVirtCodeBase);
+BOOL fDasmDisassemble(
+    PBYTE pbCodeBegin, 
+    DWORD dwSizeOfCodeSection,
+    INT nInstToDisassemble, 
+    BOOL fStopAtFunctionEnd,
+    DWORD dwTargetAddressBegin,
+    PINT piReturnStatus);
 
 /* Disasm states */
-BOOL fStateReset();
-BOOL fStatePrefix();
+BOOL fStateReset(PDASMSTATE pstState);
+BOOL fStatePrefix(PDASMSTATE pstState);
 
-BOOL fStateOpcode();
-BOOL OPCHndlr_2ByteHandler(BYTE bOpcode);
-BOOL OPCHndlr_3ByteHandler(BYTE bOpcode);
-BOOL OPCHndlrFPU_All(BYTE bOpcode);
-BOOL OPCHndlrFPU_ModRMRegEx(BYTE bOpcode);
-BOOL OPCHndlrFPU_ModRMFullEx(BYTE bOpcode);
+BOOL fStateOpcode(PDASMSTATE pstState);
+BOOL OPCHndlr_2ByteHandler(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlr_3ByteHandler(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrFPU_All(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrFPU_ModRMRegEx(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrFPU_ModRMFullEx(PDASMSTATE pstState, BYTE bOpcode);
 
-BOOL fStateModRM();
-BOOL MODRM_fTypeDigit(BYTE bModRM, BYTE bMod, BYTE bRM);
-BOOL MODRM_fTypeR(BYTE bModRM, BYTE bMod, BYTE bReg, BYTE bRM);
+BOOL fStateModRM(PDASMSTATE pstState);
+BOOL MODRM_fTypeDigit(PDASMSTATE pstState, BYTE bModRM, BYTE bMod, BYTE bRM);
+BOOL MODRM_fTypeR(PDASMSTATE pstState, BYTE bModRM, BYTE bMod, BYTE bReg, BYTE bRM);
 OPRTYPE_RETVAL MODRM_GetOperandFromModRM(BYTE bMod, BYTE bRM, BYTE bOprSize, BYTE bRegType, 
 											__out WCHAR *pwszOprStr, __in DWORD dwOprStrCount);
 OPRTYPE_RETVAL MODRM_GetOperandFromReg(BYTE bReg, BYTE bOprSize, BYTE bRegType, 
 										__out WCHAR *pwszOprStr, __in DWORD dwOprStrCount);
-BOOL MODRM_fSetPtrStr(BYTE bOperandSize, __out WCHAR *pwszPtrStr, DWORD dwPtrStrCount);
-BYTE MODRM_bGetOperandSize();
+BOOL MODRM_fSetPtrStr(PDASMSTATE pstState, BYTE bOperandSize, __out WCHAR *pwszPtrStr, DWORD dwPtrStrCount);
+BYTE MODRM_bGetOperandSize(PDASMSTATE pstState);
 
-BOOL fStateSIB();
-BOOL fStateDisp();
-BOOL fStateImm();
+BOOL fStateSIB(PDASMSTATE pstState);
+BOOL fStateDisp(PDASMSTATE pstState);
+BOOL fStateImm(PDASMSTATE pstState);
 
-BOOL fStateDump();
-BOOL fStateDumpOnOpcodeError();
-void DUMP_vDumpDataOffset();
+BOOL fStateDump(PDASMSTATE pstState);
+BOOL fStateDump_ToString(PDASMSTATE pstState);
+BOOL fStateDumpOnOpcodeError(PDASMSTATE pstState);
+BOOL fStateDumpOnOpcodeError_ToString(PDASMSTATE pstState);
+void DUMP_vDumpDataOffset(PDASMSTATE pstState);
+void DUMP_vDumpDataOffset_ToString(PDASMSTATE pstState, PDWORD pnTotalCharsWritten);
 void DUMP_vGetSegPrefix(BYTE bSegPrefixVal, __out WCHAR **ppwszPrefixStr);
+
+//BOOL fStateDumpToMemory(PWCHAR pszStartOfBuffer, 
 
 // Opcodecode handlers grouped by:
 // ALU, Memory, Prefix, Stack, Ctrl_Cond, System_IO
 
 // Stack operations
-BOOL OPCHndlrStack_PUSH(BYTE bOpcode);
-BOOL OPCHndlrStack_POP(BYTE bOpcode);
-BOOL OPCHndlrStack_PUSHxx(BYTE bOpcode);	// PUSHAD/PUSHFD
-BOOL OPCHndlrStack_POPxx(BYTE bOpcode);		// POPAD/POPFD
-BOOL OPCHndlrStack_ENTER(BYTE bOpcode);
-BOOL OPCHndlrStack_LEAVE(BYTE bOpcode);
+BOOL OPCHndlrStack_PUSH(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrStack_POP(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrStack_PUSHxx(PDASMSTATE pstState, BYTE bOpcode);	// PUSHAD/PUSHFD
+BOOL OPCHndlrStack_POPxx(PDASMSTATE pstState, BYTE bOpcode);		// POPAD/POPFD
+BOOL OPCHndlrStack_ENTER(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrStack_LEAVE(PDASMSTATE pstState, BYTE bOpcode);
 
 // Arithmetic instruction handlers
-BOOL OPCHndlrALU_ADD(BYTE bOpcode);
-BOOL OPCHndlrALU_SUB(BYTE bOpcode);
-BOOL OPCHndlrALU_MUL(BYTE bOpcode);
-BOOL OPCHndlrALU_DIV(BYTE bOpcode);
-BOOL OPCHndlrALU_INC(BYTE bOpcode);
-BOOL OPCHndlrALU_DEC(BYTE bOpcode);
-BOOL OPCHndlrALU_Shift(BYTE bOpcode);
-BOOL OPCHndlrALU_Shift_SetInsStr(BYTE bOpcode);
-BOOL OPCHndlrALU_SALC(BYTE bOpcode);
+BOOL OPCHndlrALU_ADD(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrALU_SUB(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrALU_MUL(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrALU_DIV(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrALU_INC(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrALU_DEC(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrALU_Shift(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrALU_Shift_SetInsStr(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrALU_SALC(PDASMSTATE pstState, BYTE bOpcode);
 
 // Logical instructions
-BOOL OPCHndlrALU_OR(BYTE bOpcode);
-BOOL OPCHndlrALU_AND(BYTE bOpcode);
-BOOL OPCHndlrALU_XOR(BYTE bOpcode);
-BOOL OPCHndlrALU_NOT(BYTE bOpcode);
-BOOL OPCHndlrALU_NEG(BYTE bOpcode);
+BOOL OPCHndlrALU_OR(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrALU_AND(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrALU_XOR(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrALU_NOT(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrALU_NEG(PDASMSTATE pstState, BYTE bOpcode);
 
 // Adjust instructions
-BOOL OPCHndlrALU_DAA(BYTE bOpcode);
-BOOL OPCHndlrALU_DAS(BYTE bOpcode);
-BOOL OPCHndlrALU_AAA(BYTE bOpcode);
-BOOL OPCHndlrALU_AAS(BYTE bOpcode);
-BOOL OPCHndlrALU_AAM(BYTE bOpcode);
-BOOL OPCHndlrALU_AAD(BYTE bOpcode);
+BOOL OPCHndlrALU_DAA(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrALU_DAS(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrALU_AAA(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrALU_AAS(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrALU_AAM(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrALU_AAD(PDASMSTATE pstState, BYTE bOpcode);
 
 // Memory operations
-BOOL OPCHndlrMem_XCHG(BYTE bOpcode);
-BOOL OPCHndlrMem_MOV(BYTE bOpcode);
-BOOL OPCHndlrMem_LEA(BYTE bOpcode);
-BOOL OPCHndlrMem_CWDE(BYTE bOpcode);
-BOOL OPCHndlrMem_CDQ(BYTE bOpcode);
-BOOL OPCHndlrMem_SAHF(BYTE bOpcode);
-BOOL OPCHndlrMem_LAHF(BYTE bOpcode);
-BOOL OPCHndlrMem_MOVS(BYTE bOpcode);
-BOOL OPCHndlrMem_LODS(BYTE bOpcode);
-BOOL OPCHndlrMem_STOS(BYTE bOpcode);
-BOOL OPCHndlrMem_LES(BYTE bOpcode);
-BOOL OPCHndlrMem_LDS(BYTE bOpcode);
-BOOL OPCHndlrMem_XLAT(BYTE bOpcode);
+BOOL OPCHndlrMem_XCHG(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_MOV(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_LEA(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_CWDE(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_CDQ(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_SAHF(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_LAHF(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_MOVS(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_LODS(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_STOS(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_LES(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_LDS(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_XLAT(PDASMSTATE pstState, BYTE bOpcode);
 
 // Control flow and Conditional instructions
-BOOL OPCHndlrCC_CMP(BYTE bOpcode);
-BOOL OPCHndlrCC_BOUND(BYTE bOpcode);
-BOOL OPCHndlrCC_ARPL(BYTE bOpcode);
-BOOL OPCHndlrCC_JUMP(BYTE bOpcode);	// all jumps
-BOOL OPCHndlrCC_TEST(BYTE bOpcode);
-BOOL OPCHndlrCC_CMPS(BYTE bOpcode);
-BOOL OPCHndlrCC_SCAS(BYTE bOpcode);
-BOOL OPCHndlrCC_RETN(BYTE bOpcode);
-BOOL OPCHndlrCC_IRETD(BYTE bOpcode);
-BOOL OPCHndlrCC_CLOOP(BYTE bOpcode);	// conditional loop: LOOPE, ...
-BOOL OPCHndlrCC_CALL(BYTE bOpcode);
-BOOL OPCHndlrCC_EFLAGS(BYTE bOpcode);	// EFLAGS manipulators: CMC, CLC, STC, ...
+BOOL OPCHndlrCC_CMP(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrCC_BOUND(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrCC_ARPL(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrCC_JUMP(PDASMSTATE pstState, BYTE bOpcode);	// all jumps
+BOOL OPCHndlrCC_TEST(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrCC_CMPS(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrCC_SCAS(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrCC_RETN(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrCC_IRETD(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrCC_CLOOP(PDASMSTATE pstState, BYTE bOpcode);	// conditional loop: LOOPE, ...
+BOOL OPCHndlrCC_CALL(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrCC_EFLAGS(PDASMSTATE pstState, BYTE bOpcode);	// EFLAGS manipulators: CMC, CLC, STC, ...
 
 // System and IO instructions
-BOOL OPCHndlrSysIO_INS(BYTE bOpcode);
-BOOL OPCHndlrSysIO_OUTS(BYTE bOpcode);
-BOOL OPCHndlrSysIO_WAIT(BYTE bOpcode);
-BOOL OPCHndlrSysIO_INT(BYTE bOpcode);	//	INT3/INTn/INTO
-BOOL OPCHndlrSysIO_IceBP(BYTE bOpcode);	// undocumented INT1
-BOOL OPCHndlrSysIO_IN(BYTE bOpcode);	// IN imm
-BOOL OPCHndlrSysIO_OUT(BYTE bOpcode);	// OUT imm
-BOOL OPCHndlrSysIO_INDX(BYTE bOpcode);
-BOOL OPCHndlrSysIO_OUTDX(BYTE bOpcode);
-BOOL OPCHndlrSysIO_HLT(BYTE bOpcode);
+BOOL OPCHndlrSysIO_INS(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrSysIO_OUTS(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrSysIO_WAIT(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrSysIO_INT(PDASMSTATE pstState, BYTE bOpcode);	//	INT3/INTn/INTO
+BOOL OPCHndlrSysIO_IceBP(PDASMSTATE pstState, BYTE bOpcode);	// undocumented INT1
+BOOL OPCHndlrSysIO_IN(PDASMSTATE pstState, BYTE bOpcode);	// IN imm
+BOOL OPCHndlrSysIO_OUT(PDASMSTATE pstState, BYTE bOpcode);	// OUT imm
+BOOL OPCHndlrSysIO_INDX(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrSysIO_OUTDX(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrSysIO_HLT(PDASMSTATE pstState, BYTE bOpcode);
 
 // Prefix handlers
-BOOL OPCHndlrPrefix_Ovride(BYTE bOpcode);	// override prefixes
-BOOL OPCHndlrPrefix_LOCK(BYTE bOpcode);
-BOOL OPCHndlrPrefix_CREP(BYTE bOpcode);	// conditional repetition: REPE/REPNE
+BOOL OPCHndlrPrefix_Ovride(PDASMSTATE pstState, BYTE bOpcode);	// override prefixes
+BOOL OPCHndlrPrefix_LOCK(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrPrefix_CREP(PDASMSTATE pstState, BYTE bOpcode);	// conditional repetition: REPE/REPNE
 
 // Opcodes that may mean any one of multiple instructions
-BOOL OPCHndlrMulti_8x(BYTE bOpcode);		// 0x80 - 0x83
-BOOL OPCHndlrMulti_fx(BYTE bOpcode);		// 0xf6 and 0xf7
-BOOL OPCHndlrMulti_IncDec(BYTE bOpcode);	// 0xfe: INC/DEC
-BOOL OPCHndlrMulti_FF(BYTE bOpcode);		// 0xff
+BOOL OPCHndlrMulti_8x(PDASMSTATE pstState, BYTE bOpcode);		// 0x80 - 0x83
+BOOL OPCHndlrMulti_fx(PDASMSTATE pstState, BYTE bOpcode);		// 0xf6 and 0xf7
+BOOL OPCHndlrMulti_IncDec(PDASMSTATE pstState, BYTE bOpcode);	// 0xfe: INC/DEC
+BOOL OPCHndlrMulti_FF(PDASMSTATE pstState, BYTE bOpcode);		// 0xff
 
-BOOL OPCHndlr_NOP(BYTE bOpcode);
-BOOL OPCHndlr_HNOP(BYTE bOpcode);
+BOOL OPCHndlr_NOP(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlr_HNOP(PDASMSTATE pstState, BYTE bOpcode);
 
 // FPU instructions
-//BOOL OPCHndlrFPU_(BYTE bOpcode);
+//BOOL OPCHndlrFPU_(PDASMSTATE pstState, BYTE bOpcode);
 
 #ifdef UNIT_TESTS_ONLY
 void DEngine_FPUUnitTest();
@@ -616,45 +663,45 @@ void DEngine_SSEUnitTest();
 #endif
 
 // FPU Basic Arithmetic
-BOOL OPCHndlrFPU_FADD(BYTE bOpcode);	// FADDP/FIADD also
-BOOL OPCHndlrFPU_FSUB(BYTE bOpcode);	// + FSUBP/FISUB/FSUBR/FSUBRP/FISUBR
-BOOL OPCHndlrFPU_FMUL(BYTE bOpcode);	// + FMULP/FIMUL
-BOOL OPCHndlrFPU_FDIV(BYTE bOpcode);	// + FDIVR/FIDIV/FDIVP/FDIVRP/FIDIVR
-BOOL OPCHndlrFPU_FABS(BYTE bOpcode);
-BOOL OPCHndlrFPU_FCHS(BYTE bOpcode);
-BOOL OPCHndlrFPU_FSQRT(BYTE bOpcode);
-BOOL OPCHndlrFPU_FPREM(BYTE bOpcode);	// + FPREM1
-BOOL OPCHndlrFPU_FRNDINT(BYTE bOpcode);
-BOOL OPCHndlrFPU_FXTRACT(BYTE bOpcode);
+BOOL OPCHndlrFPU_FADD(PDASMSTATE pstState, BYTE bOpcode);	// FADDP/FIADD also
+BOOL OPCHndlrFPU_FSUB(PDASMSTATE pstState, BYTE bOpcode);	// + FSUBP/FISUB/FSUBR/FSUBRP/FISUBR
+BOOL OPCHndlrFPU_FMUL(PDASMSTATE pstState, BYTE bOpcode);	// + FMULP/FIMUL
+BOOL OPCHndlrFPU_FDIV(PDASMSTATE pstState, BYTE bOpcode);	// + FDIVR/FIDIV/FDIVP/FDIVRP/FIDIVR
+BOOL OPCHndlrFPU_FABS(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrFPU_FCHS(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrFPU_FSQRT(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrFPU_FPREM(PDASMSTATE pstState, BYTE bOpcode);	// + FPREM1
+BOOL OPCHndlrFPU_FRNDINT(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrFPU_FXTRACT(PDASMSTATE pstState, BYTE bOpcode);
 
 // FPU Load Constants
-BOOL OPCHndlrFPU_Const(BYTE bOpcode);	// all constants
+BOOL OPCHndlrFPU_Const(PDASMSTATE pstState, BYTE bOpcode);	// all constants
 
 // FPU Data Transfer
-BOOL OPCHndlrFPU_FLoad(BYTE bOpcode);		// FLD/FILD/FBLD
-BOOL OPCHndlrFPU_FStore(BYTE bOpcode);		// FST/FSTP/FIST/FISTP/FBSTP
-BOOL OPCHndlrFPU_FXCH(BYTE bOpcode);
-BOOL OPCHndlrFPU_FCMOV(BYTE bOpcode);
+BOOL OPCHndlrFPU_FLoad(PDASMSTATE pstState, BYTE bOpcode);		// FLD/FILD/FBLD
+BOOL OPCHndlrFPU_FStore(PDASMSTATE pstState, BYTE bOpcode);		// FST/FSTP/FIST/FISTP/FBSTP
+BOOL OPCHndlrFPU_FXCH(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrFPU_FCMOV(PDASMSTATE pstState, BYTE bOpcode);
 
 // FPU Compare/Classify
-BOOL OPCHndlrFPU_FCmpReal(BYTE bOpcode);	// FCOM,P,PP/FUCOM,P,PP/FCOMI,IP
-BOOL OPCHndlrFPU_FCmpInts(BYTE bOpcode);	// FICOM,P
-BOOL OPCHndlrFPU_FTST(BYTE bOpcode);
-BOOL OPCHndlrFPU_FXAM(BYTE bOpcode);
+BOOL OPCHndlrFPU_FCmpReal(PDASMSTATE pstState, BYTE bOpcode);	// FCOM,P,PP/FUCOM,P,PP/FCOMI,IP
+BOOL OPCHndlrFPU_FCmpInts(PDASMSTATE pstState, BYTE bOpcode);	// FICOM,P
+BOOL OPCHndlrFPU_FTST(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrFPU_FXAM(PDASMSTATE pstState, BYTE bOpcode);
 
 // FPU Trigonometric
-BOOL OPCHndlrFPU_Trig(BYTE bOpcode);	// FSIN/FCOS/FSINCOS/FPTAN/FPATAN
+BOOL OPCHndlrFPU_Trig(PDASMSTATE pstState, BYTE bOpcode);	// FSIN/FCOS/FSINCOS/FPTAN/FPATAN
 
 // FPU Log, Exp, Scale
-BOOL OPCHndlrFPU_LgExSc(BYTE bOpcode);	// FYL2X/FYL2XP1/F2XM1/FSCALE
+BOOL OPCHndlrFPU_LgExSc(PDASMSTATE pstState, BYTE bOpcode);	// FYL2X/FYL2XP1/F2XM1/FSCALE
 
 // FPU Control
-BOOL OPCHndlrFPU_Ctl(BYTE bOpcode);		// No operands
-BOOL OPCHndlrFPU_CtlOp(BYTE bOpcode);	// With operands
+BOOL OPCHndlrFPU_Ctl(PDASMSTATE pstState, BYTE bOpcode);		// No operands
+BOOL OPCHndlrFPU_CtlOp(PDASMSTATE pstState, BYTE bOpcode);	// With operands
 
-BOOL OPCHndlrFPU_FNOP(BYTE bOpcode);
+BOOL OPCHndlrFPU_FNOP(PDASMSTATE pstState, BYTE bOpcode);
 
-BOOL OPCHndlrFPU_Invalid(BYTE bOpcode);
+BOOL OPCHndlrFPU_Invalid(PDASMSTATE pstState, BYTE bOpcode);
 
 
 // * Instructions that are 2bytes (first byte is 0x0f) *
@@ -663,96 +710,96 @@ BOOL OPCHndlrFPU_Invalid(BYTE bOpcode);
 
 
 // Arithmetic instructions
-BOOL OPCHndlrALU_XADD(BYTE bOpcode);	// Exchange and Add
+BOOL OPCHndlrALU_XADD(PDASMSTATE pstState, BYTE bOpcode);	// Exchange and Add
 
 
 // Logical instructions
 
 
 // Memory
-// BOOL OPCHndlrMem_(BYTE bOpcode);
-BOOL OPCHndlrMem_LAR(BYTE bOpcode);
-BOOL OPCHndlrMem_LSL(BYTE bOpcode);
-BOOL OPCHndlrMem_MOVCrDr(BYTE bOpcode);
-BOOL OPCHndlrMem_BT(BYTE bOpcode);			// Bit Test
-BOOL OPCHndlrMem_BTS(BYTE bOpcode);			// Bit Test and Set
-BOOL OPCHndlrMem_LSS(BYTE bOpcode);			// Load Full Pointer
-BOOL OPCHndlrMem_BTR(BYTE bOpcode);
-BOOL OPCHndlrMem_LFS(BYTE bOpcode);			// Load Full Pointer
-BOOL OPCHndlrMem_LGS(BYTE bOpcode);			// Load Full Pointer
-BOOL OPCHndlrMem_MOVZX(BYTE bOpcode);
-BOOL OPCHndlrMem_MOVSX(BYTE bOpcode);
-BOOL OPCHndlrMem_BTC(BYTE bOpcode);
-BOOL OPCHndlrMem_BSF(BYTE bOpcode);
-BOOL OPCHndlrMem_BSR(BYTE bOpcode);
-BOOL OPCHndlrMem_ByteSWAP(BYTE bOpcode);
+// BOOL OPCHndlrMem_(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_LAR(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_LSL(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_MOVCrDr(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_BT(PDASMSTATE pstState, BYTE bOpcode);			// Bit Test
+BOOL OPCHndlrMem_BTS(PDASMSTATE pstState, BYTE bOpcode);			// Bit Test and Set
+BOOL OPCHndlrMem_LSS(PDASMSTATE pstState, BYTE bOpcode);			// Load Full Pointer
+BOOL OPCHndlrMem_BTR(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_LFS(PDASMSTATE pstState, BYTE bOpcode);			// Load Full Pointer
+BOOL OPCHndlrMem_LGS(PDASMSTATE pstState, BYTE bOpcode);			// Load Full Pointer
+BOOL OPCHndlrMem_MOVZX(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_MOVSX(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_BTC(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_BSF(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_BSR(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMem_ByteSWAP(PDASMSTATE pstState, BYTE bOpcode);
 
 // Control flow and Conditional
-// BOOL OPCHndlrCC_(BYTE bOpcode);
-BOOL OPCHndlrCC_CMOV(BYTE bOpcode);		// Conditional move
-BOOL OPCHndlrCC_SETxx(BYTE bOpcode);	// SET byte on condition
-BOOL OPCHndlrCC_CmpXchg(BYTE bOpcode);	// Compare and Exchange
+// BOOL OPCHndlrCC_(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrCC_CMOV(PDASMSTATE pstState, BYTE bOpcode);		// Conditional move
+BOOL OPCHndlrCC_SETxx(PDASMSTATE pstState, BYTE bOpcode);	// SET byte on condition
+BOOL OPCHndlrCC_CmpXchg(PDASMSTATE pstState, BYTE bOpcode);	// Compare and Exchange
 
 
 // Sys or IO instructions
-// BOOL OPCHndlrSysIO_(BYTE bOpcode);
-BOOL OPCHndlrSysIO_LdtTrS(BYTE bOpcode);	// 0f 00 LLDT/SLDT/LTR/...
-BOOL OPCHndlrSysIO_GdtIdMsw(BYTE bOpcode);	// 0f 01 LGDT/SGDT/LIDT/...
-BOOL OPCHndlrSysIO_CLTS(BYTE bOpcode);		// Clear Task-Switched Flag in CR0
-BOOL OPCHndlrSysIO_INVD(BYTE bOpcode);		// Invalidate internal caches
-BOOL OPCHndlrSysIO_WBINVD(BYTE bOpcode);	// write-back and invalidate cache
-BOOL OPCHndlrSysIO_UD2(BYTE bOpcode);		// undefined instruction
-BOOL OPCHndlrSysIO_WRMSR(BYTE bOpcode);		// Write To Model Specific Register
-BOOL OPCHndlrSysIO_RDTSC(BYTE bOpcode);
-BOOL OPCHndlrSysIO_RDMSR(BYTE bOpcode);
-BOOL OPCHndlrSysIO_RDPMC(BYTE bOpcode);		// Read Performance Monitoring Counters
-BOOL OPCHndlrSysIO_SYSENTER(BYTE bOpcode);
-BOOL OPCHndlrSysIO_SYSEXIT(BYTE bOpcode);
-BOOL OPCHndlrSysIO_CPUID(BYTE bOpcode);
-BOOL OPCHndlrSysIO_RSM(BYTE bOpcode);		// Resume from System Mgmt mode
-BOOL OPCHndlrSysIO_Prefetch(BYTE bOpcode);	// 0f 18
+// BOOL OPCHndlrSysIO_(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrSysIO_LdtTrS(PDASMSTATE pstState, BYTE bOpcode);	// 0f 00 LLDT/SLDT/LTR/...
+BOOL OPCHndlrSysIO_GdtIdMsw(PDASMSTATE pstState, BYTE bOpcode);	// 0f 01 LGDT/SGDT/LIDT/...
+BOOL OPCHndlrSysIO_CLTS(PDASMSTATE pstState, BYTE bOpcode);		// Clear Task-Switched Flag in CR0
+BOOL OPCHndlrSysIO_INVD(PDASMSTATE pstState, BYTE bOpcode);		// Invalidate internal caches
+BOOL OPCHndlrSysIO_WBINVD(PDASMSTATE pstState, BYTE bOpcode);	// write-back and invalidate cache
+BOOL OPCHndlrSysIO_UD2(PDASMSTATE pstState, BYTE bOpcode);		// undefined instruction
+BOOL OPCHndlrSysIO_WRMSR(PDASMSTATE pstState, BYTE bOpcode);		// Write To Model Specific Register
+BOOL OPCHndlrSysIO_RDTSC(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrSysIO_RDMSR(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrSysIO_RDPMC(PDASMSTATE pstState, BYTE bOpcode);		// Read Performance Monitoring Counters
+BOOL OPCHndlrSysIO_SYSENTER(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrSysIO_SYSEXIT(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrSysIO_CPUID(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrSysIO_RSM(PDASMSTATE pstState, BYTE bOpcode);		// Resume from System Mgmt mode
+BOOL OPCHndlrSysIO_Prefetch(PDASMSTATE pstState, BYTE bOpcode);	// 0f 18
 
 
 // Opcodes that may mean any one of multiple instructions
-BOOL OPCHndlrMulti_BitTestX(BYTE bOpcode);		// 0f ba
+BOOL OPCHndlrMulti_BitTestX(PDASMSTATE pstState, BYTE bOpcode);		// 0f ba
 
 // MMX instructions
-//BOOL OPCHndlrMMX_(BYTE bOpcode);
-BOOL OPCHndlrMMX_PArith(BYTE bOpcode);
-BOOL OPCHndlrMMX_PCmp(BYTE bOpcode);
-BOOL OPCHndlrMMX_PConv(BYTE bOpcode);
-BOOL OPCHndlrMMX_PLogical(BYTE bOpcode);
-BOOL OPCHndlrMMX_PShift(BYTE bOpcode);
-BOOL OPCHndlrMMX_PMov(BYTE bOpcode);
-BOOL OPCHndlrMMX_EMMS(BYTE bOpcode);
-BOOL OPCHndlrMMX_PSHUFW(BYTE bOpcode);
-BOOL OPCHndlrMMX_PINSRW(BYTE bOpcode);
-BOOL OPCHndlrMMX_PEXTRW(BYTE bOpcode);
-BOOL OPCHndlrMMX_PMOVMSKB(BYTE bOpcode);
-BOOL OPCHndlrMMX_PMaxMinAvg(BYTE bOpcode);	// PMINUB/PMAXUB/PMINSW/PMAXSW/PAVGB/PVGW
-BOOL OPCHndlrMMX_PMulti7x(BYTE bOpcode);	// 0F {71,72,73}
+//BOOL OPCHndlrMMX_(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMMX_PArith(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMMX_PCmp(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMMX_PConv(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMMX_PLogical(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMMX_PShift(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMMX_PMov(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMMX_EMMS(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMMX_PSHUFW(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMMX_PINSRW(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMMX_PEXTRW(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMMX_PMOVMSKB(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrMMX_PMaxMinAvg(PDASMSTATE pstState, BYTE bOpcode);	// PMINUB/PMAXUB/PMINSW/PMAXSW/PAVGB/PVGW
+BOOL OPCHndlrMMX_PMulti7x(PDASMSTATE pstState, BYTE bOpcode);	// 0F {71,72,73}
 
 // SSE instructions
-//BOOL OPCHndlrSSE_(BYTE bOpcode);
-BOOL OPCHndlrSSE_Arith(BYTE bOpcode);
-BOOL OPCHndlrSSE_Cmp(BYTE bOpcode);
-void vCALLBACK_SSECmp();
-BOOL OPCHndlrSSE_Conv(BYTE bOpcode);
-BOOL OPCHndlrSSE_Logical(BYTE bOpcode);
-BOOL OPCHndlrSSE_Mov(BYTE bOpcode);
-BOOL OPCHndlrSSE_SHUFPS(BYTE bOpcode);
-BOOL OPCHndlrSSE_MultiAE(BYTE bOpcode);	// FXSAVE/FXRSTOR/LDMXCSR/STMXCSR/SFENCE
-BOOL OPCHndlrSSE_Prefetch18(BYTE bOpcode);	// 0F 18 PREFETCH{T0,T1,T2,NTA}
+//BOOL OPCHndlrSSE_(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrSSE_Arith(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrSSE_Cmp(PDASMSTATE pstState, BYTE bOpcode);
+void vCALLBACK_SSECmp(PDASMSTATE pstState);
+BOOL OPCHndlrSSE_Conv(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrSSE_Logical(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrSSE_Mov(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrSSE_SHUFPS(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrSSE_MultiAE(PDASMSTATE pstState, BYTE bOpcode);	// FXSAVE/FXRSTOR/LDMXCSR/STMXCSR/SFENCE
+BOOL OPCHndlrSSE_Prefetch18(PDASMSTATE pstState, BYTE bOpcode);	// 0F 18 PREFETCH{T0,T1,T2,NTA}
 
-BOOL OPCHndlrAES(BYTE bOpcodeThirdByte);
+BOOL OPCHndlrAES(PDASMSTATE pstState, BYTE bOpcodeThirdByte);
 
 // Invalid opcodes handler
-BOOL OPCHndlr_INVALID(BYTE bOpCode);
+BOOL OPCHndlr_INVALID(PDASMSTATE pstState, BYTE bOpcode);
 
 // Instructions I don't know yet
-BOOL OPCHndlrUnKwn_SSE(BYTE bOpcode);
-BOOL OPCHndlrUnKwn_MMX(BYTE bOpcode);
-BOOL OPCHndlrUnKwn_(BYTE bOpcode);		// call this when you don't know anything about the opcode
+BOOL OPCHndlrUnKwn_SSE(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrUnKwn_MMX(PDASMSTATE pstState, BYTE bOpcode);
+BOOL OPCHndlrUnKwn_(PDASMSTATE pstState, BYTE bOpcode);		// call this when you don't know anything about the opcode
 
 /* end of function prototypes */
 

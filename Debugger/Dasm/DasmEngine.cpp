@@ -1,6 +1,8 @@
 
 #include "DasmEngine.h"
 
+#define MAGIC_DASMSTATE_STRUCT  0x00031009
+
 // Lookup table for instruction names
 WCHAR awszOpcodeLUT1[][MAX_OPCODE_NAME_LEN+1] = 
 {
@@ -214,7 +216,7 @@ WCHAR awszFPUOpcodeLUTFullEx[][MAX_OPCODE_NAME_LEN+1] = // Instructions that use
 // column.
 // All opcode handlers take one BYTE argument(the opcode) 
 // and return a BOOL value.
-BOOL (*afpOpcHndlrs[16][16])(BYTE) = 
+BOOL (*afpOpcHndlrs[16][16])(PDASMSTATE, BYTE) = 
 {
 //		0						1						2						3						4
 //		5						6						7						8						9
@@ -312,7 +314,7 @@ BOOL (*afpOpcHndlrs[16][16])(BYTE) =
 // column.
 // All opcode handlers take one BYTE argument(the opcode) 
 // and return a BOOL value.
-BOOL (*afpOpcHndlrs2[16][16])(BYTE) = 
+BOOL (*afpOpcHndlrs2[16][16])(PDASMSTATE, BYTE) = 
 {
 //		0						1						2						3						4
 //		5						6						7						8						9
@@ -411,7 +413,7 @@ BOOL (*afpOpcHndlrs2[16][16])(BYTE) =
  // LookUpTable for instructions whose ModRM's value lies
  // between 00h and BFh. These instructions use only the
  // 'reg' field of the ModRM byte as the opcode extension.
- BOOL (*afpFPUModRMRegEx[8][8])(BYTE) = 
+ BOOL (*afpFPUModRMRegEx[8][8])(PDASMSTATE, BYTE) = 
  {
  /*D8,0*/	OPCHndlrFPU_FADD,	OPCHndlrFPU_FMUL,	OPCHndlrFPU_FCmpReal,	OPCHndlrFPU_FCmpReal,
 			OPCHndlrFPU_FSUB,	OPCHndlrFPU_FSUB,	OPCHndlrFPU_FDIV,		OPCHndlrFPU_FDIV,
@@ -443,7 +445,7 @@ BOOL (*afpOpcHndlrs2[16][16])(BYTE) =
  // between C0h and FFh. These instructions use the full
  // ModRM byte as the opcode extension.
  // #possible ModRM values between C0h and FFh = FFh - C0h + 1h = 40h
- BOOL (*afpFPUModRMFullEx[8][0x40])(BYTE) = 
+ BOOL (*afpFPUModRMFullEx[8][0x40])(PDASMSTATE, BYTE) = 
  {
  //			0						1						2						3						4						5						6						7
  //			8						9						A						B						C						D						E						F
@@ -546,47 +548,6 @@ static WCHAR awszPtrStr[][MAX_PTR_STR] = {L"", L"byte ptr ", L"word ptr ", L"dwo
 											L"fword ptr ", L"qword ptr ", L"tbyte ptr ",
 											L"mmword ptr ", L"xmmword ptr "};
 
-/*
- * ***********************************************************************
- * Static global variables that are used to manage the disassembler state
- * machine and its operation.
- * ***********************************************************************
- */
-
-// We will read the code section byte by byte.
-static PBYTE pByteInCode = NULL;
-static long lDelta = 0;
-
-// Variables to store the whole opcode, high and low 4bits of the opcode
-static BYTE bFullOpcode = 0;
-static BYTE bOpcodeLow = 0;
-static BYTE bOpcodeHigh = 0;
-
-// Used only by FPU instructions
-static BYTE bFPUModRM = 0;
-static BYTE bFPUReg = 0;
-
-// This is where each field of the current instruction being
-// disassembled is stored.
-// The information from this structure will finally be used to
-// print out the disassembled instruction to the command line.
-static INS_SPLIT insCurIns;
-
-// No. of bytes in the current instruction; used to dump
-// hex bytes by subtracting this from pByteInCode
-static INT nBytesCurIns;
-
-// String that is used to hold the asm instruction after disassembly
-static WCHAR wszCurInsStr[MAX_INS_STRLEN+1];
-static WCHAR wszCurInsTempStr[MAX_INS_STRLEN+1];
-
-// State machine control
-static DASM_STATE dsNextState;
-
-/*
- * **** End of static global variables ****
- */
-
 
 /* fDisassembler()
  * Entry point for the DasmEngine. Calls fDoDisassembly() for all the
@@ -642,21 +603,18 @@ BOOL fDoDisassembly(DWORD *pdwCodeSection, DWORD dwSizeOfCodeSection,
 {
 	ASSERT(pdwCodeSection != NULL);
 
-	// We will read the code section byte by byte.
-	pByteInCode = (BYTE*)pdwCodeSection;
+    DASMSTATE stDasmState;
 
-	PBYTE pbEndOfCode = pByteInCode + dwSizeOfCodeSection;
+	PBYTE pbEndOfCode = NULL;
 
-	// State machine start-stop
-	BOOL fRunning;
+    // Initialize DASMSTATE
+    ZeroMemory(&stDasmState, sizeof(stDasmState));
+    stDasmState.fRunning = TRUE;
+    stDasmState.dsNextState = DASM_STATE_RESET;
 
-	lDelta = (long)dwVirtCodeBase - (long)pdwCodeSection;
-
-	// Set the first state of the machine.
-	dsNextState = DASM_STATE_RESET;
-
-	// Set the state machine to start
-	fRunning = TRUE;
+    stDasmState.pbCurrentCodePtr = (BYTE*)pdwCodeSection;
+    pbEndOfCode = stDasmState.pbCurrentCodePtr + dwSizeOfCodeSection;
+    stDasmState.lDelta = (long)dwVirtCodeBase - (long)pdwCodeSection;
 
 	wprintf_s(L"\n* Disassembly of code section *\n");
 
@@ -664,28 +622,28 @@ BOOL fDoDisassembly(DWORD *pdwCodeSection, DWORD dwSizeOfCodeSection,
 	// section or an error occurs.
 	while(1)
 	{
-		switch(dsNextState)
+		switch(stDasmState.dsNextState)
 		{
 			case DASM_STATE_RESET:
 			{
 				// Begin disassembly of a new instruction.
-				// Clear out insCurIns.
-				memset(&insCurIns, 0, sizeof(INS_SPLIT));
-				nBytesCurIns = 0;
+				// Clear out pstState->insCurIns.
+				memset(&stDasmState.insCurIns, 0, sizeof(stDasmState.insCurIns));
+				stDasmState.nBytesCurIns = 0;
 
 				// Check if we have reached the end of code section
 				// before beginning decoding of the next byte
-				if(pByteInCode >= pbEndOfCode)
+				if(stDasmState.pbCurrentCodePtr >= pbEndOfCode)
 					goto AFT_WHILE;
 				else
-					dsNextState = DASM_STATE_PREFIX;
+					stDasmState.dsNextState = DASM_STATE_PREFIX;
 				break;
 			}
 
 			case DASM_STATE_PREFIX:
 			{
-				if(!fStatePrefix())
-					dsNextState = DASM_STATE_ERROR;
+				if(!fStatePrefix(&stDasmState))
+					stDasmState.dsNextState = DASM_STATE_ERROR;
 
 				// If fStatePrefix did not return FALSE, then the next state
 				// was already determined in that function.
@@ -695,7 +653,7 @@ BOOL fDoDisassembly(DWORD *pdwCodeSection, DWORD dwSizeOfCodeSection,
 
 			case DASM_STATE_OPCODE:
 			{
-				if(!fStateOpcode())
+				if(!fStateOpcode(&stDasmState))
 				{
 					//dsNextState = DASM_STATE_ERROR;
 					#ifdef _DEBUG
@@ -703,51 +661,51 @@ BOOL fDoDisassembly(DWORD *pdwCodeSection, DWORD dwSizeOfCodeSection,
 					#endif
 
 					// simply print the offending opcode byte and move on
-					fStateDumpOnOpcodeError();
+					fStateDumpOnOpcodeError(&stDasmState);
 
-					// Let pByteInCode point to the byte after the current 
+					// Let pstState->pbCurrentCodePtr point to the byte after the current 
 					// opcode/prefix byte processed
-					pByteInCode = pByteInCode - nBytesCurIns + 1;
-					dsNextState = DASM_STATE_RESET;
+					stDasmState.pbCurrentCodePtr = stDasmState.pbCurrentCodePtr - stDasmState.nBytesCurIns + 1;
+					stDasmState.dsNextState = DASM_STATE_RESET;
 				}
 				break;
 			}
 
 			case DASM_STATE_MOD_RM:
 			{
-				if(!fStateModRM())
-					dsNextState = DASM_STATE_ERROR;
+				if(!fStateModRM(&stDasmState))
+					stDasmState.dsNextState = DASM_STATE_ERROR;
 				break;
 			}
 
 			case DASM_STATE_SIB:
 			{
-				if(!fStateSIB())
-					dsNextState = DASM_STATE_ERROR;
+				if(!fStateSIB(&stDasmState))
+					stDasmState.dsNextState = DASM_STATE_ERROR;
 				break;
 			}
 
 			case DASM_STATE_DISP:
 			{
-				if(!fStateDisp())
-					dsNextState = DASM_STATE_ERROR;
+				if(!fStateDisp(&stDasmState))
+					stDasmState.dsNextState = DASM_STATE_ERROR;
 				break;
 			}
 
 			case DASM_STATE_IMM:
 			{
-				if(!fStateImm())
-					dsNextState = DASM_STATE_ERROR;
+				if(!fStateImm(&stDasmState))
+					stDasmState.dsNextState = DASM_STATE_ERROR;
 				break;
 			}
 
 			case DASM_STATE_DUMP:
 			{
-				if(insCurIns.fpvCallback)
-					insCurIns.fpvCallback();
+				if(stDasmState.insCurIns.fpvCallback)
+					stDasmState.insCurIns.fpvCallback(&stDasmState);
 
-				if(!fStateDump())
-					dsNextState = DASM_STATE_ERROR;
+				if(!fStateDump(&stDasmState))
+					stDasmState.dsNextState = DASM_STATE_ERROR;
 				break;
 			}
 
@@ -760,7 +718,7 @@ BOOL fDoDisassembly(DWORD *pdwCodeSection, DWORD dwSizeOfCodeSection,
 			default:
 			{
 				// We will never reach here, typically.
-				wprintf_s(L"fDoDisassembly(): Invalid state: %d\n", dsNextState);
+				wprintf_s(L"fDoDisassembly(): Invalid state: %d\n", stDasmState.dsNextState);
 				goto AFT_WHILE;
 			}
 
@@ -772,12 +730,204 @@ AFT_WHILE:
 	wprintf_s(L"\n**** End of disassembly ****\n");
 	wprintf_s(L"Code begin        : %08Xh\n", (DWORD)pdwCodeSection);
 	wprintf_s(L"Code size         : %Xh\n", dwSizeOfCodeSection);
-	wprintf_s(L"Last byte decoded : %08Xh\n", (DWORD)pByteInCode-1);
-	wprintf_s(L"Bytes decoded     : %Xh\n", (DWORD)pByteInCode - (DWORD)pdwCodeSection);
+	wprintf_s(L"Last byte decoded : %08Xh\n", (DWORD)stDasmState.pbCurrentCodePtr-1);
+	wprintf_s(L"Bytes decoded     : %Xh\n", (DWORD)stDasmState.pbCurrentCodePtr - (DWORD)pdwCodeSection);
 
 	return TRUE;
 }// fDoDisassembly
 
+/* fDasmDisassemble()
+ * 
+ * fDasmDisassemble() is modeled as a state machine.
+ *
+ * Args:
+ *		pbCodeBegin: 
+ *		dwSizeOfCodeSection: DWORD value indicating the size of the
+ *			code section. Required to stop the disassembler at the
+ *			end of the code section(.text).
+ *      nInstToDisassemble:
+ *      fStopAtFunctionEnd:
+ *      dwTargetAddressBegin:
+ *					
+ *				
+ * RetVal:
+ *		TRUE/FALSE depending on whether there was an error or not.
+ */
+BOOL fDasmDisassemble(
+    PBYTE pbCodeBegin, 
+    DWORD dwSizeOfCodeSection,
+    INT nInstToDisassemble, 
+    BOOL fStopAtFunctionEnd,
+    DWORD dwTargetAddressBegin,
+    PINT piReturnStatus)
+{
+	return FALSE;
+}
+
+/* fDasmDisassembleOne()
+ * 
+ * Disassemble one instruction at a time and return the statement as a string.
+ *
+ * Args:
+ *		pbCodeBegin: 
+ *		dwSizeOfCodeSection: DWORD value indicating the size of the
+ *			code section. Required to stop the disassembler at the
+ *			end of the code section(.text).
+ *      nInstToDisassemble:
+ *      fStopAtFunctionEnd:
+ *      dwTargetAddressBegin:
+ *					
+ *				
+ * RetVal:
+ *		TRUE/FALSE depending on whether there was an error or not.
+ */
+BOOL fDasmDisassembleOne(
+    __inout PDASMSTATE pstDasmState,
+    __in PBYTE pbCodeBegin, 
+    DWORD dwSizeOfCodeSection,
+    INT nInstToDisassemble, 
+    BOOL fStopAtFunctionEnd,
+    DWORD dwTargetAddressBegin,
+    __out PINT piReturnStatus)
+{
+    ASSERT(pbCodeBegin);
+    ASSERT(pstDasmState);
+
+	PBYTE pbEndOfCode = NULL;
+    BOOL fRetVal = TRUE;
+
+    if(pstDasmState->structInitialized != MAGIC_DASMSTATE_STRUCT)
+    {
+        // Initialize DASMSTATE for the first call
+        ZeroMemory(pstDasmState, sizeof(DASMSTATE));
+        pstDasmState->structInitialized = MAGIC_DASMSTATE_STRUCT;
+
+        ASSERT(pbCodeBegin < (pbCodeBegin + dwSizeOfCodeSection));
+    }
+
+    pstDasmState->fRunning = TRUE;
+    pstDasmState->dsNextState = DASM_STATE_RESET;
+
+    pstDasmState->pbCurrentCodePtr = pbCodeBegin;
+    pbEndOfCode = pstDasmState->pbCurrentCodePtr + dwSizeOfCodeSection;
+    pstDasmState->lDelta = (long)dwTargetAddressBegin - (long)pbCodeBegin;
+
+	// State machine is running until we have disassembled one instruction
+    while(1)
+    {
+		switch(pstDasmState->dsNextState)
+		{
+			case DASM_STATE_RESET:
+			{
+				// Clear out pstState->insCurIns
+				memset(&pstDasmState->insCurIns, 0, sizeof(pstDasmState->insCurIns));
+				pstDasmState->nBytesCurIns = 0;
+
+				// Check if we have reached the end of code section
+				// before beginning decoding of the next byte
+				if(pstDasmState->pbCurrentCodePtr >= pbEndOfCode)
+					goto AFT_WHILE;
+				else
+					pstDasmState->dsNextState = DASM_STATE_PREFIX;
+				break;
+			}
+
+			case DASM_STATE_PREFIX:
+			{
+				if(!fStatePrefix(pstDasmState))
+					pstDasmState->dsNextState = DASM_STATE_ERROR;
+
+				// If fStatePrefix did not return FALSE, then the next state
+				// was already determined in that function.
+
+				break;
+			}
+
+			case DASM_STATE_OPCODE:
+			{
+				if(!fStateOpcode(pstDasmState))
+				{
+                    // This function is disassembling one instruction at a time, so we want to 
+                    // indicate error if we cannot decode an opcode
+
+					pstDasmState->dsNextState = DASM_STATE_ERROR;
+			        dbgwprintf(L"fDoDisassembly(): OPCODE error. Continuing...\n");
+
+					// simply print the offending opcode byte and move on
+					//fStateDumpOnOpcodeError(pstDasmState);
+
+					// Let pstState->pbCurrentCodePtr point to the byte after the current 
+					// opcode/prefix byte processed so that on the next call we will decode
+                    // starting from here
+					pstDasmState->pbCurrentCodePtr = pstDasmState->pbCurrentCodePtr - pstDasmState->nBytesCurIns + 1;
+					//pstDasmState->dsNextState = DASM_STATE_RESET;
+				}
+				break;
+			}
+
+			case DASM_STATE_MOD_RM:
+			{
+				if(!fStateModRM(pstDasmState))
+					pstDasmState->dsNextState = DASM_STATE_ERROR;
+				break;
+			}
+
+			case DASM_STATE_SIB:
+			{
+				if(!fStateSIB(pstDasmState))
+					pstDasmState->dsNextState = DASM_STATE_ERROR;
+				break;
+			}
+
+			case DASM_STATE_DISP:
+			{
+				if(!fStateDisp(pstDasmState))
+					pstDasmState->dsNextState = DASM_STATE_ERROR;
+				break;
+			}
+
+			case DASM_STATE_IMM:
+			{
+				if(!fStateImm(pstDasmState))
+					pstDasmState->dsNextState = DASM_STATE_ERROR;
+				break;
+			}
+
+			case DASM_STATE_DUMP:
+			{
+				if(pstDasmState->insCurIns.fpvCallback)
+					pstDasmState->insCurIns.fpvCallback(pstDasmState);
+
+				if(!fStateDump_ToString(pstDasmState))
+					pstDasmState->dsNextState = DASM_STATE_ERROR;
+				
+                // Disassembling one instruction at a time, so exit state machine
+                goto AFT_WHILE;
+
+			}
+
+			case DASM_STATE_ERROR:
+			{
+				dbgwprintf(L"fDoDisassembly(): ERROR state. Aborting...\n");
+                fRetVal = FALSE;
+				goto AFT_WHILE;
+			}
+
+			default:
+			{
+				// We will never reach here, typically.
+				dbgwprintf(L"fDoDisassembly(): Invalid state: %d\n", pstDasmState->dsNextState);
+                fRetVal = FALSE;
+				goto AFT_WHILE;
+			}
+
+		}// switch(bCurState)
+    }
+
+AFT_WHILE:
+    
+    return TRUE;
+}
 
 /* fStateReset()
  * This is the state that the state machine begins to operate in.
@@ -790,7 +940,7 @@ AFT_WHILE:
  * RetVal:
  *		TRUE/FALSE depending on whether there was an error or not.
  */
-BOOL fStateReset()
+BOOL fStateReset(PDASMSTATE pstState)
 {
 	return TRUE;
 }// fStateReset()
@@ -804,24 +954,24 @@ BOOL fStateReset()
  * RetVal:
  *		TRUE/FALSE depending on whether there was an error or not.
  */
-BOOL fStatePrefix()
+BOOL fStatePrefix(PDASMSTATE pstState)
 {
 	INT nPrefixes = 0;
 
 	// There may be upto 4 prefixes of 1byte each.
 	// We must scan forward until we find a byte that
 	// is not a prefix.
-	while( Util_fIsPrefix(*pByteInCode) )
+	while( Util_fIsPrefix(*pstState->pbCurrentCodePtr) )
 	{
 		++nPrefixes;
 
-		switch(*pByteInCode)
+		switch(*pstState->pbCurrentCodePtr)
 		{
 			case 0xf0:
 			case 0xf2:
 			case 0xf3:
-				insCurIns.wPrefixTypes |= PREFIX_LOCKREP;
-				insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] = *pByteInCode;
+				pstState->insCurIns.wPrefixTypes |= PREFIX_LOCKREP;
+				pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] = *pstState->pbCurrentCodePtr;
 				break;
 
 			case 0x2e:
@@ -830,42 +980,42 @@ BOOL fStatePrefix()
 			case 0x26:
 			case 0x64:
 			case 0x65:
-				insCurIns.wPrefixTypes |= PREFIX_SEG;
-				insCurIns.abPrefixes[PREFIX_INDEX_SEG] = *pByteInCode;
+				pstState->insCurIns.wPrefixTypes |= PREFIX_SEG;
+				pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG] = *pstState->pbCurrentCodePtr;
 				break;
 
 			case 0x66:
-				insCurIns.wPrefixTypes |= PREFIX_OPSIZE;
-				insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] = *pByteInCode;
+				pstState->insCurIns.wPrefixTypes |= PREFIX_OPSIZE;
+				pstState->insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] = *pstState->pbCurrentCodePtr;
 				break;
 
 			case 0x67:
-				insCurIns.wPrefixTypes |= PREFIX_ADSIZE;
-				insCurIns.abPrefixes[PREFIX_INDEX_ADSIZE] = *pByteInCode;
+				pstState->insCurIns.wPrefixTypes |= PREFIX_ADSIZE;
+				pstState->insCurIns.abPrefixes[PREFIX_INDEX_ADSIZE] = *pstState->pbCurrentCodePtr;
 				break;
 
 			default:
-				wprintf_s(L"fStatePrefix(): Unrecognized prefix type %u\n", *pByteInCode);
+				wprintf_s(L"fStatePrefix(): Unrecognized prefix type %u\n", *pstState->pbCurrentCodePtr);
 				break;
-		}// switch(*pByteInCode)
+		}// switch(*pstState->pbCurrentCodePtr)
 		
 		#ifdef _DEBUG
-			wprintf_s(L"PREFIX: %xh\n", *pByteInCode);
+			wprintf_s(L"PREFIX: %xh\n", *pstState->pbCurrentCodePtr);
 		#endif
 
 		// We have read 1byte
-		++pByteInCode;
-		++nBytesCurIns;
+		++(pstState->pbCurrentCodePtr);
+		++pstState->nBytesCurIns;
 
 	}
 
-	insCurIns.nPrefix = nPrefixes;
+	pstState->insCurIns.nPrefix = nPrefixes;
 	if(nPrefixes > 0)
-		insCurIns.fPrefix = TRUE;
+		pstState->insCurIns.fPrefix = TRUE;
 
 	// No more prefixes to process.
-	// pByteInCode is now pointing to an opcode.
-	dsNextState = DASM_STATE_OPCODE;
+	// pstState->pbCurrentCodePtr is now pointing to an opcode.
+	pstState->dsNextState = DASM_STATE_OPCODE;
 
 	return TRUE;
 
@@ -880,37 +1030,37 @@ BOOL fStatePrefix()
  * RetVal:
  *		TRUE/FALSE depending on whether there was an error or not.
  */
-BOOL fStateOpcode()
+BOOL fStateOpcode(PDASMSTATE pstState)
 {
 	// Lookup instruction string using opcode
 	WORD wIndex;
 
 	// Differentiate whether it is a 1byte/2byte opcode
-	if(*pByteInCode == OPC_2BYTE_ESCAPE)
+	if(*pstState->pbCurrentCodePtr == OPC_2BYTE_ESCAPE)
 	{
-		return OPCHndlr_2ByteHandler(*pByteInCode);
+		return OPCHndlr_2ByteHandler(pstState, *pstState->pbCurrentCodePtr);
 	}
 	
 	// 1byte opcode
-	bFullOpcode = *pByteInCode;
+	pstState->bFullOpcode = *pstState->pbCurrentCodePtr;
 
 	// Separate out the first and second 4bits and use them
 	// as indexes into the afpOpcHndlrs function pointer matrix
-	bOpcodeLow = *pByteInCode & 0x0f;
-	bOpcodeHigh = (*pByteInCode & 0xf0) >> 4;
+	pstState->bOpcodeLow = *pstState->pbCurrentCodePtr & 0x0f;
+	pstState->bOpcodeHigh = (*pstState->pbCurrentCodePtr & 0xf0) >> 4;
 
-	++pByteInCode;
-	++nBytesCurIns;
+	++pstState->pbCurrentCodePtr;
+	++pstState->nBytesCurIns;
 
 	// store the d and w bits in INS_SPLIT
-	Util_vGetDWBits(bFullOpcode, &insCurIns.bDBit, &insCurIns.bWBit);
+	Util_vGetDWBits(pstState->bFullOpcode, &pstState->insCurIns.bDBit, &pstState->insCurIns.bWBit);
 
 	// Construct the output string starting with the instruction mnemonic
-	wIndex = (bOpcodeHigh * 16) + bOpcodeLow;
-	StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszOpcodeLUT1[wIndex]);
+	wIndex = (pstState->bOpcodeHigh * 16) + pstState->bOpcodeLow;
+	StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszOpcodeLUT1[wIndex]);
 	
 	// function call
-	return afpOpcHndlrs[bOpcodeHigh][bOpcodeLow](bFullOpcode);
+	return afpOpcHndlrs[pstState->bOpcodeHigh][pstState->bOpcodeLow](pstState, pstState->bFullOpcode);
 
 }// fStateOpcode()
 
@@ -923,7 +1073,7 @@ BOOL fStateOpcode()
  * RetVal:
  *		TRUE/FALSE depending on whether there was an error or not.
  */
-BOOL OPCHndlr_2ByteHandler(BYTE bOpcode)
+BOOL OPCHndlr_2ByteHandler(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		if(bOpcode != 0x0f)
@@ -936,31 +1086,31 @@ BOOL OPCHndlr_2ByteHandler(BYTE bOpcode)
 	WORD wIndex;
 
 	// Go past 0x0f
-	++pByteInCode;
-	++nBytesCurIns;
+	++pstState->pbCurrentCodePtr;
+	++pstState->nBytesCurIns;
 
-	// pByteInCode is now pointing to the second byte of the opcode;
+	// pstState->pbCurrentCodePtr is now pointing to the second byte of the opcode;
 	// i.e., the byte after 0x0f
-	bFullOpcode = *pByteInCode;
-	++pByteInCode;
-	++nBytesCurIns;
+	pstState->bFullOpcode = *pstState->pbCurrentCodePtr;
+	++pstState->pbCurrentCodePtr;
+	++pstState->nBytesCurIns;
 
-	// pByteInCode now points to the byte after the second opcode byte
+	// pstState->pbCurrentCodePtr now points to the byte after the second opcode byte
 	
 	// Separate out the first and second 4bits and use them
 	// as indexes into the afpOpcHndlrs2 function pointer matrix
-	bOpcodeLow = bFullOpcode & 0x0f;
-	bOpcodeHigh = (bFullOpcode & 0xf0) >> 4;
+	pstState->bOpcodeLow = pstState->bFullOpcode & 0x0f;
+	pstState->bOpcodeHigh = (pstState->bFullOpcode & 0xf0) >> 4;
 
 	// store the d and w bits in INS_SPLIT
-	Util_vGetDWBits(bFullOpcode, &insCurIns.bDBit, &insCurIns.bWBit);
+	Util_vGetDWBits(pstState->bFullOpcode, &pstState->insCurIns.bDBit, &pstState->insCurIns.bWBit);
 	
 	// Construct the output string starting with the instruction mnemonic
-	wIndex = (bOpcodeHigh * 16) + bOpcodeLow;
-	StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszOpcodeLUT2[wIndex]);
+	wIndex = (pstState->bOpcodeHigh * 16) + pstState->bOpcodeLow;
+	StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszOpcodeLUT2[wIndex]);
 
 	// function call
-	return afpOpcHndlrs2[bOpcodeHigh][bOpcodeLow](bFullOpcode);
+	return afpOpcHndlrs2[pstState->bOpcodeHigh][pstState->bOpcodeLow](pstState, pstState->bFullOpcode);
 
 }// OPCHndlr_2ByteHandler()
 
@@ -973,37 +1123,37 @@ BOOL OPCHndlr_2ByteHandler(BYTE bOpcode)
  * RetVal:
  *		TRUE/FALSE depending on whether there was an error or not.
  */
-BOOL OPCHndlr_3ByteHandler(BYTE bOpcode)
+BOOL OPCHndlr_3ByteHandler(PDASMSTATE pstState, BYTE bOpcode)
 {
 	WORD wIndex;
 
-	// pByteInCode is now pointing to the third byte of the opcode;
+	// pstState->pbCurrentCodePtr is now pointing to the third byte of the opcode;
 	// i.e., the byte after 0x3a or 0x38
-	bFullOpcode = *pByteInCode;
-	++pByteInCode;
-	++nBytesCurIns;
+	pstState->bFullOpcode = *pstState->pbCurrentCodePtr;
+	++pstState->pbCurrentCodePtr;
+	++pstState->nBytesCurIns;
 
 	if(bOpcode == 0x38)
 	{
-		switch(bFullOpcode)
+		switch(pstState->bFullOpcode)
 		{
 			case 0xDB:
 			case 0xDC:
 			case 0xDD:
 			case 0xDE:
-			case 0xDF: return OPCHndlrAES(bFullOpcode); break;
+			case 0xDF: return OPCHndlrAES(pstState, pstState->bFullOpcode); break;
 			default:
-				wprintf_s(L"OPCHndlr_3ByteHandler(): Invalid third byte %xh %xh\n", bOpcode, bFullOpcode);
+				wprintf_s(L"OPCHndlr_3ByteHandler(): Invalid third byte %xh %xh\n", bOpcode, pstState->bFullOpcode);
 				return FALSE;
 		}
 	}
 	else if(bOpcode == 0x3A)
 	{
-		switch(bFullOpcode)
+		switch(pstState->bFullOpcode)
 		{
-			case 0xDF: return OPCHndlrAES(bFullOpcode); break;
+			case 0xDF: return OPCHndlrAES(pstState, pstState->bFullOpcode); break;
 			default:
-				wprintf_s(L"OPCHndlr_3ByteHandler(): Invalid third byte %xh %xh\n", bOpcode, bFullOpcode);
+				wprintf_s(L"OPCHndlr_3ByteHandler(): Invalid third byte %xh %xh\n", bOpcode, pstState->bFullOpcode);
 				return FALSE;
 		}
 	}
@@ -1028,15 +1178,15 @@ void DEngine_FPUUnitTest()
 
 	for(iOpcode = 0xD8; iOpcode <= 0xDF; ++iOpcode)
 	{
-		bFullOpcode = (BYTE)iOpcode;
-		bOpcodeLow = bFullOpcode & 0x0f;
-		bOpcodeHigh = (bFullOpcode & 0xf0) >> 4;
+		pstState->bFullOpcode = (BYTE)iOpcode;
+		pstState->bOpcodeLow = pstState->bFullOpcode & 0x0f;
+		pstState->bOpcodeHigh = (pstState->bFullOpcode & 0xf0) >> 4;
 
 		for(INT iReg = 0; iReg <= 7; ++iReg)
 		{
-			bFPUModRM = iReg;
-			bFPUModRM = bFPUModRM << 3;
-			OPCHndlrFPU_All(bFullOpcode);
+			pstState->bFPUModRM = iReg;
+			pstState->bFPUModRM = pstState->bFPUModRM << 3;
+			OPCHndlrFPU_All(pstState->bFullOpcode);
 		}
 
 		wprintf_s(L"\n");
@@ -1045,14 +1195,14 @@ void DEngine_FPUUnitTest()
 	wprintf_s(L"\n*************** FullEx ***************\n");
 	for(iOpcode = 0xD8; iOpcode <= 0xDF; ++iOpcode)
 	{
-		bFullOpcode = (BYTE)iOpcode;
-		bOpcodeLow = bFullOpcode & 0x0f;
-		bOpcodeHigh = (bFullOpcode & 0xf0) >> 4;
+		pstState->bFullOpcode = (BYTE)iOpcode;
+		pstState->bOpcodeLow = pstState->bFullOpcode & 0x0f;
+		pstState->bOpcodeHigh = (pstState->bFullOpcode & 0xf0) >> 4;
 
 		for(iModRM = 0xC0; iModRM <= 0xFF; ++iModRM)
 		{
-			bFPUModRM = iModRM;
-			OPCHndlrFPU_All(bFullOpcode);
+			pstState->bFPUModRM = iModRM;
+			OPCHndlrFPU_All(pstState->bFullOpcode);
 		}
 		wprintf_s(L"\n");
 	}// for bOpcode
@@ -1139,7 +1289,7 @@ void DEngine_MMXUnitTest()
 	INT nOpcodes = _countof(abMMXOpcodes)/2;
 	for(INT i = 0; i < nOpcodes; ++i)
 	{
-		pByteInCode = abMMXOpcodes + i*2;
+		pstState->pbCurrentCodePtr = abMMXOpcodes + i*2;
 		fStateOpcode();
 	}
 
@@ -1194,7 +1344,7 @@ void DEngine_SSEUnitTest()
 	INT nOpcodes = _countof(abSSEOpcodes)/2;
 	for(INT i = 0; i < nOpcodes; ++i)
 	{
-		pByteInCode = abSSEOpcodes + i*2;
+		pstState->pbCurrentCodePtr = abSSEOpcodes + i*2;
 		fStateOpcode();
 	}
 
@@ -1208,42 +1358,42 @@ void DEngine_SSEUnitTest()
  * which are the FPU instructions.
  * 
  */
-BOOL OPCHndlrFPU_All(BYTE bOpcode)
+BOOL OPCHndlrFPU_All(PDASMSTATE pstState, BYTE bOpcode)
 {
 	// All FPU instructions have 0xD as the high nibble
-	ASSERT(bOpcodeHigh == 0xD);
+	ASSERT(pstState->bOpcodeHigh == 0xD);
 
 	// Figure out how this instruction uses the ModRM byte:
 	// - All bits as opcode extension OR
 	// - Only 'reg' field as opcode extension
 
 #ifndef UNIT_TESTS_ONLY
-	bFPUModRM = *pByteInCode;
+	pstState->bFPUModRM = *pstState->pbCurrentCodePtr;
 #endif
 
-	// pByteInCode now points to the next instruction.
-	// pByteInCode need not be modified in any of the
+	// pstState->pbCurrentCodePtr now points to the next instruction.
+	// pstState->pbCurrentCodePtr need not be modified in any of the
 	// individual FPU instruction functions.
 
-	if(bFPUModRM <= 0xBF)
-		return OPCHndlrFPU_ModRMRegEx(bOpcode);
+	if(pstState->bFPUModRM <= 0xBF)
+		return OPCHndlrFPU_ModRMRegEx(pstState, bOpcode);
 
 	// ModRM lies between C0h and FFh
-	return OPCHndlrFPU_ModRMFullEx(bOpcode);
+	return OPCHndlrFPU_ModRMFullEx(pstState, bOpcode);
 }
 
-BOOL OPCHndlrFPU_ModRMRegEx(BYTE bOpcode)
+BOOL OPCHndlrFPU_ModRMRegEx(PDASMSTATE pstState, BYTE bOpcode)
 {
-	ASSERT(bFPUModRM >= 0x00 && bFPUModRM <= 0xBF);	// always??
+	ASSERT(pstState->bFPUModRM >= 0x00 && pstState->bFPUModRM <= 0xBF);	// always??
 
-	// Value of ModRM is stored into global variable bFPUModRM
-	// pByteInCode is now pointing to the ModRM byte
+	// Value of ModRM is stored into global variable pstState->bFPUModRM
+	// pstState->pbCurrentCodePtr is now pointing to the ModRM byte
 
 	INT iRowIndex;
 	INT iInsStrIndex;
 
-	Util_vSplitModRMByte(bFPUModRM, NULL, &bFPUReg, NULL);
-	ASSERT(bFPUReg >= 0 && bFPUReg <= 7);
+	Util_vSplitModRMByte(pstState->bFPUModRM, NULL, &pstState->bFPUReg, NULL);
+	ASSERT(pstState->bFPUReg >= 0 && pstState->bFPUReg <= 7);
 
 	/*
 	 * Subtract the opcode by 0xD8 to obtain a zero-based
@@ -1252,26 +1402,26 @@ BOOL OPCHndlrFPU_ModRMRegEx(BYTE bOpcode)
 	 */
 	iRowIndex = bOpcode - 0xD8;
 
-	iInsStrIndex = iRowIndex * 8 + bFPUReg;
-	StringCchCopy(wszCurInsStr, _countof(wszCurInsStr), awszFPUOpcodeLUTRegEx[iInsStrIndex]);
+	iInsStrIndex = iRowIndex * 8 + pstState->bFPUReg;
+	StringCchCopy(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), awszFPUOpcodeLUTRegEx[iInsStrIndex]);
 
-	return afpFPUModRMRegEx[iRowIndex][bFPUReg](bOpcode);
+	return afpFPUModRMRegEx[iRowIndex][pstState->bFPUReg](pstState, bOpcode);
 }
 
-BOOL OPCHndlrFPU_ModRMFullEx(BYTE bOpcode)
+BOOL OPCHndlrFPU_ModRMFullEx(PDASMSTATE pstState, BYTE bOpcode)
 {
-	ASSERT(bFPUModRM >= 0xC0 && bFPUModRM <= 0xFF);	// always??
+	ASSERT(pstState->bFPUModRM >= 0xC0 && pstState->bFPUModRM <= 0xFF);	// always??
 
-	// Value of ModRM is stored into global variable bFPUModRM
+	// Value of ModRM is stored into global variable pstState->bFPUModRM
 
 	/*
-	 * pByteInCode is now pointing to the ModRM byte.
+	 * pstState->pbCurrentCodePtr is now pointing to the ModRM byte.
 	 * Move past the ModRM byte because it is not used
 	 * to calculate the effective address but is just an
 	 * opcode extension. We are going to DUMP state next.
 	 */
-	++pByteInCode;
-	++nBytesCurIns;
+	++pstState->pbCurrentCodePtr;
+	++pstState->nBytesCurIns;
 	
 	/*
 	 * Subtract the opcode by 0xD8 to obtain a zero-based
@@ -1280,12 +1430,12 @@ BOOL OPCHndlrFPU_ModRMFullEx(BYTE bOpcode)
 	 * ModRM to use as column index.
 	 */
 	BYTE bRowIndex = bOpcode - 0xD8;
-	BYTE bColIndex = bFPUModRM - 0xC0;
+	BYTE bColIndex = pstState->bFPUModRM - 0xC0;
 	INT iInsStrIndex = bRowIndex * 0x40 + bColIndex;
 
-	StringCchCopy(wszCurInsStr, _countof(wszCurInsStr), awszFPUOpcodeLUTFullEx[iInsStrIndex]);
+	StringCchCopy(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), awszFPUOpcodeLUTFullEx[iInsStrIndex]);
 
-	return afpFPUModRMFullEx[bRowIndex][bColIndex](bOpcode);
+	return afpFPUModRMFullEx[bRowIndex][bColIndex](pstState, bOpcode);
 }
 
 
@@ -1303,7 +1453,7 @@ BOOL OPCHndlrFPU_ModRMFullEx(BYTE bOpcode)
  * RetVal:
  *		TRUE/FALSE depending on whether there was an error or not.
  */
-BOOL fStateModRM()
+BOOL fStateModRM(PDASMSTATE pstState)
 {
 	BYTE bModRM;
 	BYTE bMod;
@@ -1311,43 +1461,43 @@ BOOL fStateModRM()
 	BYTE bRM;
 	BOOL fRetVal = TRUE;
 
-	bModRM = *pByteInCode;
-	++pByteInCode;
-	++nBytesCurIns;
+	bModRM = *pstState->pbCurrentCodePtr;
+	++pstState->pbCurrentCodePtr;
+	++pstState->nBytesCurIns;
 
 	#ifdef _DEBUG
 		wprintf_s(L"fStateModRM(): %xh\n", bModRM);
 	#endif
 
-	// pByteInCode now points to either a disp/SIB/IMM
+	// pstState->pbCurrentCodePtr now points to either a disp/SIB/IMM
 
-	insCurIns.bModRM = bModRM;
+	pstState->insCurIns.bModRM = bModRM;
 
 	// split the ModRM byte into individual fields
 	Util_vSplitModRMByte(bModRM, &bMod, &bReg, &bRM);
 
 	// Check the ModRM type
-	if(insCurIns.bModRMType == MODRM_TYPE_DIGIT)
+	if(pstState->insCurIns.bModRMType == MODRM_TYPE_DIGIT)
 	{
 		// Only Mod+RM bits are to be evaluated
 		// Only 1 operand specified using ModRM byte
-		fRetVal = MODRM_fTypeDigit(bModRM, bMod, bRM);
+		fRetVal = MODRM_fTypeDigit(pstState, bModRM, bMod, bRM);
 	}
 
-	else if(insCurIns.bModRMType == MODRM_TYPE_R)
+	else if(pstState->insCurIns.bModRMType == MODRM_TYPE_R)
 	{
 		// Two operands specified by Mod+RM and Reg bits
-		fRetVal = MODRM_fTypeR(bModRM, bMod, bReg, bRM);
+		fRetVal = MODRM_fTypeR(pstState, bModRM, bMod, bReg, bRM);
 	}
 	else
 	{
 		#ifdef _DEBUG
-			wprintf_s(L"fStateModRM(): Invalid bModRMType %d\n", insCurIns.bModRMType);
+			wprintf_s(L"fStateModRM(): Invalid bModRMType %d\n", pstState->insCurIns.bModRMType);
 			fRetVal = FALSE;
 		#endif
 	}
 
-	// dsNextState has been determined in fSplIns()/TypeR()/TypeDigit()
+	// pstState->dsNextState has been determined in fSplIns()/TypeR()/TypeDigit()
 
 	return fRetVal;
 
@@ -1359,7 +1509,7 @@ BOOL fStateModRM()
  *	Reg field is the opcode extension. Mod+RM fields give the effective 
  *	address of the operand. Next state will be set if this returns TRUE.
  */
-BOOL MODRM_fTypeDigit(BYTE bModRM, BYTE bMod, BYTE bRM)
+BOOL MODRM_fTypeDigit(PDASMSTATE pstState, BYTE bModRM, BYTE bMod, BYTE bRM)
 {
 	BYTE bOprSize;
 	OPRTYPE_RETVAL oprType;
@@ -1368,23 +1518,23 @@ BOOL MODRM_fTypeDigit(BYTE bModRM, BYTE bMod, BYTE bRM)
 	 * Only one operand from ModRM byte and that is stored as the src str
 	 */
 
-	if(insCurIns.fSpecialInstruction)// && 
-	   //insCurIns.bSplInsType == SPL_INS_TYPE_SIZEHINT)
+	if(pstState->insCurIns.fSpecialInstruction)// && 
+	   //pstState->insCurIns.bSplInsType == SPL_INS_TYPE_SIZEHINT)
 	{
-		bOprSize = insCurIns.bOperandSizeSrc;
+		bOprSize = pstState->insCurIns.bOperandSizeSrc;
 	}
 	else
-		bOprSize = MODRM_bGetOperandSize();
+		bOprSize = MODRM_bGetOperandSize(pstState);
 
 	// Set bImmType if required
-	if(insCurIns.fImm && insCurIns.bImmType == IMM_UNDEF)
-			insCurIns.bImmType = bOprSize;
+	if(pstState->insCurIns.fImm && pstState->insCurIns.bImmType == IMM_UNDEF)
+			pstState->insCurIns.bImmType = bOprSize;
 
 	// If we have a special instruction with specific regs
 	// No, specific regs is specified using /r ModRM type; never /digit
 	// 081812: MMX regs are specified using 'reg' field also.
-	oprType = MODRM_GetOperandFromModRM(bMod, bRM, bOprSize, insCurIns.bRegTypeSrc,
-							insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc));
+	oprType = MODRM_GetOperandFromModRM(bMod, bRM, bOprSize, pstState->insCurIns.bRegTypeSrc,
+							pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc));
 
 	if(oprType == OPRTYPE_ERROR)
 	{
@@ -1395,86 +1545,86 @@ BOOL MODRM_fTypeDigit(BYTE bModRM, BYTE bMod, BYTE bRM)
 		return FALSE;
 	}
 
-	insCurIns.fSrcStrSet = TRUE;
-	insCurIns.OprTypeSrc = oprType;
+	pstState->insCurIns.fSrcStrSet = TRUE;
+	pstState->insCurIns.OprTypeSrc = oprType;
 
 	switch(oprType)
 	{
 		case OPRTYPE_MEM:
 		{
 			// Set ptr str
-			insCurIns.pwszPtrStr = awszPtrStr[bOprSize];
+			pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSize];
 
 			// Before going to DUMP, check whether there is a imm value
-			if(insCurIns.fImm)
-				dsNextState = DASM_STATE_IMM;
+			if(pstState->insCurIns.fImm)
+				pstState->dsNextState = DASM_STATE_IMM;
 			else
-				dsNextState = DASM_STATE_DUMP;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			break;
 		}
 		
 		case OPRTYPE_MEM8:	// We have a displacement and must go to DISP state next
 		{
-			insCurIns.pwszPtrStr = awszPtrStr[bOprSize];
-			insCurIns.fDisp = TRUE;
-			insCurIns.bDispType = DISP_8BIT;
-			dsNextState = DASM_STATE_DISP;
+			pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSize];
+			pstState->insCurIns.fDisp = TRUE;
+			pstState->insCurIns.bDispType = DISP_8BIT;
+			pstState->dsNextState = DASM_STATE_DISP;
 			break;
 		}
 
 		case OPRTYPE_MEM32:	// disp32 follows
 		{
-			insCurIns.pwszPtrStr = awszPtrStr[bOprSize];
-			insCurIns.fDisp = TRUE;
-			insCurIns.bDispType = DISP_32BIT;
-			dsNextState = DASM_STATE_DISP;
+			pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSize];
+			pstState->insCurIns.fDisp = TRUE;
+			pstState->insCurIns.bDispType = DISP_32BIT;
+			pstState->dsNextState = DASM_STATE_DISP;
 			break;
 		}
 
 		case OPRTYPE_SIB:	// No displacement
 		{
-			insCurIns.pwszPtrStr = awszPtrStr[bOprSize];
-			dsNextState = DASM_STATE_SIB;
+			pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSize];
+			pstState->dsNextState = DASM_STATE_SIB;
 			break;
 		}
 
 		case OPRTYPE_SIB8:	// SIB follows, followed by disp8
 		{
-			insCurIns.pwszPtrStr = awszPtrStr[bOprSize];
-			insCurIns.fSIB = TRUE;
-			insCurIns.fDisp = TRUE;
-			insCurIns.bDispType = DISP_8BIT;
-			dsNextState = DASM_STATE_SIB;	// SIB state must check for fDisp and transition
+			pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSize];
+			pstState->insCurIns.fSIB = TRUE;
+			pstState->insCurIns.fDisp = TRUE;
+			pstState->insCurIns.bDispType = DISP_8BIT;
+			pstState->dsNextState = DASM_STATE_SIB;	// SIB state must check for fDisp and transition
 			break;
 		}
 
 		case OPRTYPE_SIB32:	// SIB follows, followed by disp32
 		{
-			insCurIns.pwszPtrStr = awszPtrStr[bOprSize];
-			insCurIns.fSIB = TRUE;
-			insCurIns.fDisp = TRUE;
-			insCurIns.bDispType = DISP_32BIT;
-			dsNextState = DASM_STATE_SIB;	// SIB state must check for fDisp and transition
+			pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSize];
+			pstState->insCurIns.fSIB = TRUE;
+			pstState->insCurIns.fDisp = TRUE;
+			pstState->insCurIns.bDispType = DISP_32BIT;
+			pstState->dsNextState = DASM_STATE_SIB;	// SIB state must check for fDisp and transition
 			break;
 		}
 
 		// todo: check whether there is a SIB byte and then the disp32
 		case OPRTYPE_DISP32:	// disp32 follows
 		{
-			insCurIns.pwszPtrStr = awszPtrStr[bOprSize];
-			insCurIns.fDisp = TRUE;
-			insCurIns.bDispType = DISP_32BIT;
-			dsNextState = DASM_STATE_DISP;
+			pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSize];
+			pstState->insCurIns.fDisp = TRUE;
+			pstState->insCurIns.bDispType = DISP_32BIT;
+			pstState->dsNextState = DASM_STATE_DISP;
 			break;
 		}
 
 		case OPRTYPE_REG:
 		{
 			// Before going to DUMP, check whether there is a imm value
-			if(insCurIns.fImm)
-				dsNextState = DASM_STATE_IMM;
+			if(pstState->insCurIns.fImm)
+				pstState->dsNextState = DASM_STATE_IMM;
 			else
-				dsNextState = DASM_STATE_DUMP;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			break;
 		}
 
@@ -1496,7 +1646,7 @@ BOOL MODRM_fTypeDigit(BYTE bModRM, BYTE bMod, BYTE bRM)
  *
  *	Next state will be set if this returns TRUE.
  */
-BOOL MODRM_fTypeR(BYTE bModRM, BYTE bMod, BYTE bReg, BYTE bRM)
+BOOL MODRM_fTypeR(PDASMSTATE pstState, BYTE bModRM, BYTE bMod, BYTE bReg, BYTE bRM)
 {
 	ASSERT(bMod >= 0 && bMod <= 3);
 	ASSERT(bRM >= 0 && bRM <= 7);
@@ -1511,12 +1661,12 @@ BOOL MODRM_fTypeR(BYTE bModRM, BYTE bMod, BYTE bReg, BYTE bRM)
 	OPRTYPE_RETVAL LocalOprType;
 
 
-	if(insCurIns.fSpecialInstruction)
+	if(pstState->insCurIns.fSpecialInstruction)
 	{
-		bOprSizeSrc = insCurIns.bOperandSizeSrc;
-		bOprSizeDes = insCurIns.bOperandSizeDes;
+		bOprSizeSrc = pstState->insCurIns.bOperandSizeSrc;
+		bOprSizeDes = pstState->insCurIns.bOperandSizeDes;
 		#ifdef _DEBUG
-			if(insCurIns.fImm && insCurIns.bImmType == IMM_UNDEF)
+			if(pstState->insCurIns.fImm && pstState->insCurIns.bImmType == IMM_UNDEF)
 			{
 				wprintf_s(L"MODRM_fTypeR(): fSpl bImmType UNDEF\n");
 				return FALSE;
@@ -1525,125 +1675,125 @@ BOOL MODRM_fTypeR(BYTE bModRM, BYTE bMod, BYTE bReg, BYTE bRM)
 	}
 	else
 	{
-		bOprSizeSrc = bOprSizeDes = MODRM_bGetOperandSize();
-		if(insCurIns.fImm && insCurIns.bImmType == IMM_UNDEF)
-			insCurIns.bImmType = bOprSizeSrc;
+		bOprSizeSrc = bOprSizeDes = MODRM_bGetOperandSize(pstState);
+		if(pstState->insCurIns.fImm && pstState->insCurIns.bImmType == IMM_UNDEF)
+			pstState->insCurIns.bImmType = bOprSizeSrc;
 	}
 
 	// There are two operands specified using the ModRM byte.
 	// Get source and destination operands
-	if(insCurIns.bDBit == 0)
+	if(pstState->insCurIns.bDBit == 0)
 	{
 		// src = Reg; des = Mod+RM
 		
 		// If we have a special instruction with specific regs
-		//if(insCurIns.fSpecialInstruction && insCurIns.bSplInsType == SPL_INS_TYPE_REG)
+		//if(pstState->insCurIns.fSpecialInstruction && pstState->insCurIns.bSplInsType == SPL_INS_TYPE_REG)
 		//{
-		//	insCurIns.OprTypeSrc = MODRM_GetOperandFromReg(bReg, bOprSizeSrc, insCurIns.bRegTypeSrc, 
-		//								insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc));
-		//	insCurIns.OprTypeDes = MODRM_GetOperandFromModRM(bMod, bRM, bOprSizeDes, insCurIns.bRegTypeDest, 
-		//								insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes));
+		//	pstState->insCurIns.OprTypeSrc = MODRM_GetOperandFromReg(bReg, bOprSizeSrc, pstState->insCurIns.bRegTypeSrc, 
+		//								pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc));
+		//	pstState->insCurIns.OprTypeDes = MODRM_GetOperandFromModRM(bMod, bRM, bOprSizeDes, pstState->insCurIns.bRegTypeDest, 
+		//								pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes));
 		//}
 		//else
 		//{
-		//	insCurIns.OprTypeSrc = MODRM_GetOperandFromReg(bReg, bOprSizeSrc, REGTYPE_GREG, 
-		//								insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc));
-		//	insCurIns.OprTypeDes = MODRM_GetOperandFromModRM(bMod, bRM, bOprSizeDes, insCurIns.bRegTypeDest, 
-		//								insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes));
+		//	pstState->insCurIns.OprTypeSrc = MODRM_GetOperandFromReg(bReg, bOprSizeSrc, REGTYPE_GREG, 
+		//								pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc));
+		//	pstState->insCurIns.OprTypeDes = MODRM_GetOperandFromModRM(bMod, bRM, bOprSizeDes, pstState->insCurIns.bRegTypeDest, 
+		//								pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes));
 		//}
 
-		insCurIns.OprTypeSrc = MODRM_GetOperandFromReg(bReg, bOprSizeSrc, insCurIns.bRegTypeSrc, 
-									insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc));
-		insCurIns.OprTypeDes = MODRM_GetOperandFromModRM(bMod, bRM, bOprSizeDes, insCurIns.bRegTypeDest, 
-									insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes));
+		pstState->insCurIns.OprTypeSrc = MODRM_GetOperandFromReg(bReg, bOprSizeSrc, pstState->insCurIns.bRegTypeSrc, 
+									pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc));
+		pstState->insCurIns.OprTypeDes = MODRM_GetOperandFromModRM(bMod, bRM, bOprSizeDes, pstState->insCurIns.bRegTypeDest, 
+									pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes));
 
-		LocalOprType = insCurIns.OprTypeDes;
+		LocalOprType = pstState->insCurIns.OprTypeDes;
 		bLocalOprSize = bOprSizeDes;
 
-		//insCurIns.fSrcStrSet = TRUE;
-		//insCurIns.fDesStrSet = TRUE;
-		//switch(insCurIns.OprTypeDes)
+		//pstState->insCurIns.fSrcStrSet = TRUE;
+		//pstState->insCurIns.fDesStrSet = TRUE;
+		//switch(pstState->insCurIns.OprTypeDes)
 		//{
 		//	case OPRTYPE_MEM:
 		//	{
 		//		// Set ptr str
-		//		insCurIns.pwszPtrStr = awszPtrStr[bOprSizeDes];
+		//		pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSizeDes];
 		//		// Before going to DUMP, check whether there is a imm value
-		//		if(insCurIns.fImm)
+		//		if(pstState->insCurIns.fImm)
 		//		{
-		//			dsNextState = DASM_STATE_IMM;
+		//			pstState->dsNextState = DASM_STATE_IMM;
 		//		}
 		//		else
-		//			dsNextState = DASM_STATE_DUMP;
+		//			pstState->dsNextState = DASM_STATE_DUMP;
 		//		break;
 		//	}
 		//
 		//	case OPRTYPE_MEM8:	// We have a displacement and must go to DISP state next
 		//	{
-		//		insCurIns.pwszPtrStr = awszPtrStr[bOprSizeDes];
-		//		insCurIns.fDisp = TRUE;
-		//		insCurIns.bDispType = DISP_8BIT;
-		//		dsNextState = DASM_STATE_DISP;
+		//		pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSizeDes];
+		//		pstState->insCurIns.fDisp = TRUE;
+		//		pstState->insCurIns.bDispType = DISP_8BIT;
+		//		pstState->dsNextState = DASM_STATE_DISP;
 		//		break;
 		//	}
 
 		//	case OPRTYPE_MEM32:	// disp32 follows
 		//	{
-		//		insCurIns.pwszPtrStr = awszPtrStr[bOprSizeDes];
-		//		insCurIns.fDisp = TRUE;
-		//		insCurIns.bDispType = DISP_32BIT;
-		//		dsNextState = DASM_STATE_DISP;
+		//		pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSizeDes];
+		//		pstState->insCurIns.fDisp = TRUE;
+		//		pstState->insCurIns.bDispType = DISP_32BIT;
+		//		pstState->dsNextState = DASM_STATE_DISP;
 		//		break;
 		//	}
 
 		//	case OPRTYPE_SIB:	// No displacement
 		//	{
-		//		insCurIns.pwszPtrStr = awszPtrStr[bOprSizeDes];
-		//		dsNextState = DASM_STATE_SIB;
+		//		pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSizeDes];
+		//		pstState->dsNextState = DASM_STATE_SIB;
 		//		break;
 		//	}
 
 		//	case OPRTYPE_SIB8:	// SIB follows, followed by disp8
 		//	{
-		//		insCurIns.pwszPtrStr = awszPtrStr[bOprSizeDes];
-		//		insCurIns.fSIB = TRUE;
-		//		insCurIns.fDisp = TRUE;
-		//		insCurIns.bDispType = DISP_8BIT;
-		//		dsNextState = DASM_STATE_SIB;	// SIB state must check for fDisp and transition
+		//		pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSizeDes];
+		//		pstState->insCurIns.fSIB = TRUE;
+		//		pstState->insCurIns.fDisp = TRUE;
+		//		pstState->insCurIns.bDispType = DISP_8BIT;
+		//		pstState->dsNextState = DASM_STATE_SIB;	// SIB state must check for fDisp and transition
 		//		break;
 		//	}
 
 		//	case OPRTYPE_SIB32:	// SIB follows, followed by disp32
 		//	{
-		//		insCurIns.pwszPtrStr = awszPtrStr[bOprSizeDes];
-		//		insCurIns.fSIB = TRUE;
-		//		insCurIns.fDisp = TRUE;
-		//		insCurIns.bDispType = DISP_32BIT;
-		//		dsNextState = DASM_STATE_SIB;	// SIB state must check for fDisp and transition
+		//		pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSizeDes];
+		//		pstState->insCurIns.fSIB = TRUE;
+		//		pstState->insCurIns.fDisp = TRUE;
+		//		pstState->insCurIns.bDispType = DISP_32BIT;
+		//		pstState->dsNextState = DASM_STATE_SIB;	// SIB state must check for fDisp and transition
 		//		break;
 		//	}
 
 		//	case OPRTYPE_DISP32:	// disp32 follows
 		//	{	
-		//		insCurIns.pwszPtrStr = awszPtrStr[bOprSizeDes];
-		//		insCurIns.fDisp = TRUE;
-		//		insCurIns.bDispType = DISP_32BIT;
-		//		dsNextState = DASM_STATE_DISP;
+		//		pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSizeDes];
+		//		pstState->insCurIns.fDisp = TRUE;
+		//		pstState->insCurIns.bDispType = DISP_32BIT;
+		//		pstState->dsNextState = DASM_STATE_DISP;
 		//		break;
 		//	}
 
 		//	case OPRTYPE_REG:
 		//	{
 		//		// Before going to DUMP, check whether there is a imm value
-		//		if(insCurIns.fImm)
-		//			dsNextState = DASM_STATE_IMM;
+		//		if(pstState->insCurIns.fImm)
+		//			pstState->dsNextState = DASM_STATE_IMM;
 		//		else
-		//			dsNextState = DASM_STATE_DUMP;
+		//			pstState->dsNextState = DASM_STATE_DUMP;
 		//		break;
 		//	}
 
 		//	default:
-		//		wprintf_s(L"MODRM_fTypeR(): Invalid oprType %d\n", insCurIns.OprTypeDes);
+		//		wprintf_s(L"MODRM_fTypeR(): Invalid oprType %d\n", pstState->insCurIns.OprTypeDes);
 		//		return FALSE;
 	
 		//}// switch(oprType)
@@ -1653,196 +1803,196 @@ BOOL MODRM_fTypeR(BYTE bModRM, BYTE bMod, BYTE bReg, BYTE bRM)
 		// src = Mod+RM; des = Reg
 		
 		// If we have a special instruction with specific regs
-		//if(insCurIns.fSpecialInstruction && insCurIns.bSplInsType == SPL_INS_TYPE_REG)
+		//if(pstState->insCurIns.fSpecialInstruction && pstState->insCurIns.bSplInsType == SPL_INS_TYPE_REG)
 		//{
-		//	insCurIns.OprTypeSrc = MODRM_GetOperandFromModRM(bMod, bRM, bOprSizeSrc, insCurIns.bRegTypeSrc,
-		//								insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc));
-		//	insCurIns.OprTypeDes = MODRM_GetOperandFromReg(bReg, bOprSizeDes, insCurIns.bRegTypeDest, 
-		//								insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes));
+		//	pstState->insCurIns.OprTypeSrc = MODRM_GetOperandFromModRM(bMod, bRM, bOprSizeSrc, pstState->insCurIns.bRegTypeSrc,
+		//								pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc));
+		//	pstState->insCurIns.OprTypeDes = MODRM_GetOperandFromReg(bReg, bOprSizeDes, pstState->insCurIns.bRegTypeDest, 
+		//								pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes));
 		//}
 		//else
 		//{
-		//	insCurIns.OprTypeSrc = MODRM_GetOperandFromModRM(bMod, bRM, bOprSizeSrc, insCurIns.bRegTypeSrc,
-		//								insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc));
-		//	insCurIns.OprTypeDes = MODRM_GetOperandFromReg(bReg, bOprSizeDes, insCurIns.bRegTypeDest, 
-		//								insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes));
+		//	pstState->insCurIns.OprTypeSrc = MODRM_GetOperandFromModRM(bMod, bRM, bOprSizeSrc, pstState->insCurIns.bRegTypeSrc,
+		//								pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc));
+		//	pstState->insCurIns.OprTypeDes = MODRM_GetOperandFromReg(bReg, bOprSizeDes, pstState->insCurIns.bRegTypeDest, 
+		//								pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes));
 		//}
 
-		insCurIns.OprTypeSrc = MODRM_GetOperandFromModRM(bMod, bRM, bOprSizeSrc, insCurIns.bRegTypeSrc,
-									insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc));
-		insCurIns.OprTypeDes = MODRM_GetOperandFromReg(bReg, bOprSizeDes, insCurIns.bRegTypeDest, 
-									insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes));
+		pstState->insCurIns.OprTypeSrc = MODRM_GetOperandFromModRM(bMod, bRM, bOprSizeSrc, pstState->insCurIns.bRegTypeSrc,
+									pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc));
+		pstState->insCurIns.OprTypeDes = MODRM_GetOperandFromReg(bReg, bOprSizeDes, pstState->insCurIns.bRegTypeDest, 
+									pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes));
 
-		LocalOprType = insCurIns.OprTypeSrc;
+		LocalOprType = pstState->insCurIns.OprTypeSrc;
 		bLocalOprSize = bOprSizeSrc;
 
-		//insCurIns.fSrcStrSet = TRUE;
-		//insCurIns.fDesStrSet = TRUE;
+		//pstState->insCurIns.fSrcStrSet = TRUE;
+		//pstState->insCurIns.fDesStrSet = TRUE;
 
-		//switch(insCurIns.OprTypeSrc)
+		//switch(pstState->insCurIns.OprTypeSrc)
 		//{
 		//	case OPRTYPE_MEM:
 		//	{
 		//		// Set ptr str
-		//		insCurIns.pwszPtrStr = awszPtrStr[bOprSizeSrc];
+		//		pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSizeSrc];
 		//		// Before going to DUMP, check whether there is a imm value
-		//		if(insCurIns.fImm)
-		//			dsNextState = DASM_STATE_IMM;
+		//		if(pstState->insCurIns.fImm)
+		//			pstState->dsNextState = DASM_STATE_IMM;
 		//		else
-		//			dsNextState = DASM_STATE_DUMP;
+		//			pstState->dsNextState = DASM_STATE_DUMP;
 		//		break;
 		//	}
 		//
 		//	case OPRTYPE_MEM8:	// We have a displacement and must go to DISP state next
 		//	{
-		//		insCurIns.pwszPtrStr = awszPtrStr[bOprSizeSrc];
-		//		insCurIns.fDisp = TRUE;
-		//		insCurIns.bDispType = DISP_8BIT;
-		//		dsNextState = DASM_STATE_DISP;
+		//		pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSizeSrc];
+		//		pstState->insCurIns.fDisp = TRUE;
+		//		pstState->insCurIns.bDispType = DISP_8BIT;
+		//		pstState->dsNextState = DASM_STATE_DISP;
 		//		break;
 		//	}
 
 		//	case OPRTYPE_MEM32:	// disp32 follows
 		//	{
-		//		insCurIns.pwszPtrStr = awszPtrStr[bOprSizeSrc];
-		//		insCurIns.fDisp = TRUE;
-		//		insCurIns.bDispType = DISP_32BIT;
-		//		dsNextState = DASM_STATE_DISP;
+		//		pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSizeSrc];
+		//		pstState->insCurIns.fDisp = TRUE;
+		//		pstState->insCurIns.bDispType = DISP_32BIT;
+		//		pstState->dsNextState = DASM_STATE_DISP;
 		//		break;
 		//	}
 
 		//	case OPRTYPE_SIB:	// No displacement
 		//	{
-		//		insCurIns.pwszPtrStr = awszPtrStr[bOprSizeSrc];
-		//		dsNextState = DASM_STATE_SIB;
+		//		pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSizeSrc];
+		//		pstState->dsNextState = DASM_STATE_SIB;
 		//		break;
 		//	}
 
 		//	case OPRTYPE_SIB8:	// SIB follows, followed by disp8
 		//	{
-		//		insCurIns.pwszPtrStr = awszPtrStr[bOprSizeSrc];
-		//		insCurIns.fSIB = TRUE;
-		//		insCurIns.fDisp = TRUE;
-		//		insCurIns.bDispType = DISP_8BIT;
-		//		dsNextState = DASM_STATE_SIB;	// SIB state must check for fDisp and transition
+		//		pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSizeSrc];
+		//		pstState->insCurIns.fSIB = TRUE;
+		//		pstState->insCurIns.fDisp = TRUE;
+		//		pstState->insCurIns.bDispType = DISP_8BIT;
+		//		pstState->dsNextState = DASM_STATE_SIB;	// SIB state must check for fDisp and transition
 		//		break;
 		//	}
 
 		//	case OPRTYPE_SIB32:	// SIB follows, followed by disp32
 		//	{
-		//		insCurIns.pwszPtrStr = awszPtrStr[bOprSizeSrc];
-		//		insCurIns.fSIB = TRUE;
-		//		insCurIns.fDisp = TRUE;
-		//		insCurIns.bDispType = DISP_32BIT;
-		//		dsNextState = DASM_STATE_SIB;	// SIB state must check for fDisp and transition
+		//		pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSizeSrc];
+		//		pstState->insCurIns.fSIB = TRUE;
+		//		pstState->insCurIns.fDisp = TRUE;
+		//		pstState->insCurIns.bDispType = DISP_32BIT;
+		//		pstState->dsNextState = DASM_STATE_SIB;	// SIB state must check for fDisp and transition
 		//		break;
 		//	}
 
 		//	case OPRTYPE_DISP32:	// disp32 follows
 		//	{
-		//		insCurIns.pwszPtrStr = awszPtrStr[bOprSizeSrc];
-		//		insCurIns.fDisp = TRUE;
-		//		insCurIns.bDispType = DISP_32BIT;
-		//		dsNextState = DASM_STATE_DISP;
+		//		pstState->insCurIns.pwszPtrStr = awszPtrStr[bOprSizeSrc];
+		//		pstState->insCurIns.fDisp = TRUE;
+		//		pstState->insCurIns.bDispType = DISP_32BIT;
+		//		pstState->dsNextState = DASM_STATE_DISP;
 		//		break;
 		//	}
 
 		//	case OPRTYPE_REG:
 		//	{
 		//		// Before going to DUMP, check whether there is a imm value
-		//		if(insCurIns.fImm)
-		//			dsNextState = DASM_STATE_IMM;
+		//		if(pstState->insCurIns.fImm)
+		//			pstState->dsNextState = DASM_STATE_IMM;
 		//		else
-		//			dsNextState = DASM_STATE_DUMP;
+		//			pstState->dsNextState = DASM_STATE_DUMP;
 		//		break;
 		//	}
 
 		//	default:
-		//		wprintf_s(L"MODRM_fTypeDigit(): Invalid oprType %d\n", insCurIns.OprTypeSrc);
+		//		wprintf_s(L"MODRM_fTypeDigit(): Invalid oprType %d\n", pstState->insCurIns.OprTypeSrc);
 		//		return FALSE;
 	
 		//}// switch(oprType)
 	
-	}// if(insCurIns.bDBit == 0)
+	}// if(pstState->insCurIns.bDBit == 0)
 
-	insCurIns.fSrcStrSet = TRUE;
-	insCurIns.fDesStrSet = TRUE;
+	pstState->insCurIns.fSrcStrSet = TRUE;
+	pstState->insCurIns.fDesStrSet = TRUE;
 
 	switch(LocalOprType)
 	{
 		case OPRTYPE_MEM:
 		{
 			// Set ptr str
-			insCurIns.pwszPtrStr = awszPtrStr[bLocalOprSize];
+			pstState->insCurIns.pwszPtrStr = awszPtrStr[bLocalOprSize];
 			// Before going to DUMP, check whether there is a imm value
-			if(insCurIns.fImm)
-				dsNextState = DASM_STATE_IMM;
+			if(pstState->insCurIns.fImm)
+				pstState->dsNextState = DASM_STATE_IMM;
 			else
-				dsNextState = DASM_STATE_DUMP;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			break;
 		}
 		
 		case OPRTYPE_MEM8:	// We have a displacement and must go to DISP state next
 		{
-			insCurIns.pwszPtrStr = awszPtrStr[bLocalOprSize];
-			insCurIns.fDisp = TRUE;
-			insCurIns.bDispType = DISP_8BIT;
-			dsNextState = DASM_STATE_DISP;
+			pstState->insCurIns.pwszPtrStr = awszPtrStr[bLocalOprSize];
+			pstState->insCurIns.fDisp = TRUE;
+			pstState->insCurIns.bDispType = DISP_8BIT;
+			pstState->dsNextState = DASM_STATE_DISP;
 			break;
 		}
 
 		case OPRTYPE_MEM32:	// disp32 follows
 		{
-			insCurIns.pwszPtrStr = awszPtrStr[bLocalOprSize];
-			insCurIns.fDisp = TRUE;
-			insCurIns.bDispType = DISP_32BIT;
-			dsNextState = DASM_STATE_DISP;
+			pstState->insCurIns.pwszPtrStr = awszPtrStr[bLocalOprSize];
+			pstState->insCurIns.fDisp = TRUE;
+			pstState->insCurIns.bDispType = DISP_32BIT;
+			pstState->dsNextState = DASM_STATE_DISP;
 			break;
 		}
 
 		case OPRTYPE_SIB:	// No displacement
 		{
-			insCurIns.pwszPtrStr = awszPtrStr[bLocalOprSize];
-			dsNextState = DASM_STATE_SIB;
+			pstState->insCurIns.pwszPtrStr = awszPtrStr[bLocalOprSize];
+			pstState->dsNextState = DASM_STATE_SIB;
 			break;
 		}
 
 		case OPRTYPE_SIB8:	// SIB follows, followed by disp8
 		{
-			insCurIns.pwszPtrStr = awszPtrStr[bLocalOprSize];
-			insCurIns.fSIB = TRUE;
-			insCurIns.fDisp = TRUE;
-			insCurIns.bDispType = DISP_8BIT;
-			dsNextState = DASM_STATE_SIB;	// SIB state must check for fDisp and transition
+			pstState->insCurIns.pwszPtrStr = awszPtrStr[bLocalOprSize];
+			pstState->insCurIns.fSIB = TRUE;
+			pstState->insCurIns.fDisp = TRUE;
+			pstState->insCurIns.bDispType = DISP_8BIT;
+			pstState->dsNextState = DASM_STATE_SIB;	// SIB state must check for fDisp and transition
 			break;
 		}
 
 		case OPRTYPE_SIB32:	// SIB follows, followed by disp32
 		{
-			insCurIns.pwszPtrStr = awszPtrStr[bLocalOprSize];
-			insCurIns.fSIB = TRUE;
-			insCurIns.fDisp = TRUE;
-			insCurIns.bDispType = DISP_32BIT;
-			dsNextState = DASM_STATE_SIB;	// SIB state must check for fDisp and transition
+			pstState->insCurIns.pwszPtrStr = awszPtrStr[bLocalOprSize];
+			pstState->insCurIns.fSIB = TRUE;
+			pstState->insCurIns.fDisp = TRUE;
+			pstState->insCurIns.bDispType = DISP_32BIT;
+			pstState->dsNextState = DASM_STATE_SIB;	// SIB state must check for fDisp and transition
 			break;
 		}
 
 		case OPRTYPE_DISP32:	// disp32 follows
 		{
-			insCurIns.pwszPtrStr = awszPtrStr[bLocalOprSize];
-			insCurIns.fDisp = TRUE;
-			insCurIns.bDispType = DISP_32BIT;
-			dsNextState = DASM_STATE_DISP;
+			pstState->insCurIns.pwszPtrStr = awszPtrStr[bLocalOprSize];
+			pstState->insCurIns.fDisp = TRUE;
+			pstState->insCurIns.bDispType = DISP_32BIT;
+			pstState->dsNextState = DASM_STATE_DISP;
 			break;
 		}
 
 		case OPRTYPE_REG:
 		{
 			// Before going to DUMP, check whether there is a imm value
-			if(insCurIns.fImm)
-				dsNextState = DASM_STATE_IMM;
+			if(pstState->insCurIns.fImm)
+				pstState->dsNextState = DASM_STATE_IMM;
 			else
-				dsNextState = DASM_STATE_DUMP;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			break;
 		}
 
@@ -1852,7 +2002,7 @@ BOOL MODRM_fTypeR(BYTE bModRM, BYTE bMod, BYTE bReg, BYTE bRM)
 	
 	}// switch(oprType)
 
-	// dsNextState has been set
+	// pstState->dsNextState has been set
 	
 	return TRUE;
 }
@@ -2000,7 +2150,7 @@ OPRTYPE_RETVAL MODRM_GetOperandFromReg(BYTE bReg, BYTE bOprSize, BYTE bRegType,
 }
 
 
-BOOL MODRM_fSetPtrStr(BYTE bOperandSize, __out WCHAR *pwszPtrStr, DWORD dwPtrStrCount)
+BOOL MODRM_fSetPtrStr(PDASMSTATE pstState, BYTE bOperandSize, __out WCHAR *pwszPtrStr, DWORD dwPtrStrCount)
 {
 	ASSERT(bOperandSize >= OPERANDSIZE_UNDEF && bOperandSize <= OPERANDSIZE_64BIT);
 
@@ -2014,9 +2164,9 @@ BOOL MODRM_fSetPtrStr(BYTE bOperandSize, __out WCHAR *pwszPtrStr, DWORD dwPtrStr
 
 	// If bOperandSize has not been determined earlier, then we must
 	// determine it using wBit and opsize attrib
-	if(insCurIns.bWBit == 0)
+	if(pstState->insCurIns.bWBit == 0)
 		StringCchCopy(pwszPtrStr, dwPtrStrCount, awszPtrStr[PTR_STR_INDEX_BYTE]);
-	else if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+	else if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 		// 16bit
 		StringCchCopy(pwszPtrStr, dwPtrStrCount, awszPtrStr[PTR_STR_INDEX_WORD]);
 	else
@@ -2034,12 +2184,12 @@ BOOL MODRM_fSetPtrStr(BYTE bOperandSize, __out WCHAR *pwszPtrStr, DWORD dwPtrStr
  *	opsize attrib. This function must be NOT be used for
  *	fSplInstructions!
  */
-BYTE MODRM_bGetOperandSize()
+BYTE MODRM_bGetOperandSize(PDASMSTATE pstState)
 {
-	if(!insCurIns.fWBitAbsent && insCurIns.bWBit == 0)
+	if(!pstState->insCurIns.fWBitAbsent && pstState->insCurIns.bWBit == 0)
 		return OPERANDSIZE_8BIT;
 	
-	if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+	if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 		return OPERANDSIZE_16BIT;
 
 	return OPERANDSIZE_32BIT;
@@ -2059,14 +2209,14 @@ BYTE MODRM_bGetOperandSize()
  * RetVal:
  *		TRUE/FALSE depending on whether there was an error or not.
  */
-BOOL fStateSIB()
+BOOL fStateSIB(PDASMSTATE pstState)
 {
 	BYTE bSIB, bScale, bIndex, bBase;
 
-	bSIB = *pByteInCode;
-	++pByteInCode;
-	++nBytesCurIns;
-	insCurIns.bSIB = bSIB;
+	bSIB = *pstState->pbCurrentCodePtr;
+	++pstState->pbCurrentCodePtr;
+	++pstState->nBytesCurIns;
+	pstState->insCurIns.bSIB = bSIB;
 
 	#ifdef _DEBUG
 		wprintf_s(L"fStateSIB(): %X\n", bSIB);
@@ -2092,45 +2242,45 @@ BOOL fStateSIB()
 		case 0:	// no scaling
 			if(bIndex == 4)		// no index either
 			{
-				insCurIns.wszScaleIndex[0] = 0;	// must not print this in DUMP
+				pstState->insCurIns.wszScaleIndex[0] = 0;	// must not print this in DUMP
 				break;
 			}
 
 			// todo: Add '[' ']' in DUMP state: done
-			StringCchPrintf(insCurIns.wszScaleIndex, _countof(insCurIns.wszScaleIndex), L"%s",
+			StringCchPrintf(pstState->insCurIns.wszScaleIndex, _countof(pstState->insCurIns.wszScaleIndex), L"%s",
 							awszRegCodes32[bIndex]);
 			break;
 
 		case 1:	// scale 2
 			if(bIndex == 4)		// Nothing
 			{
-				insCurIns.wszScaleIndex[0] = 0;	// must not print this in DUMP
+				pstState->insCurIns.wszScaleIndex[0] = 0;	// must not print this in DUMP
 				break;
 			}
 
-			StringCchPrintf(insCurIns.wszScaleIndex, _countof(insCurIns.wszScaleIndex), L"%s*2",
+			StringCchPrintf(pstState->insCurIns.wszScaleIndex, _countof(pstState->insCurIns.wszScaleIndex), L"%s*2",
 							awszRegCodes32[bIndex]);
 			break;
 
 		case 2:	// scale 4
 			if(bIndex == 4)		// Nothing
 			{
-				insCurIns.wszScaleIndex[0] = 0;	// must not print this in DUMP
+				pstState->insCurIns.wszScaleIndex[0] = 0;	// must not print this in DUMP
 				break;
 			}
 
-			StringCchPrintf(insCurIns.wszScaleIndex, _countof(insCurIns.wszScaleIndex), L"%s*4",
+			StringCchPrintf(pstState->insCurIns.wszScaleIndex, _countof(pstState->insCurIns.wszScaleIndex), L"%s*4",
 							awszRegCodes32[bIndex]);
 			break;
 
 		case 3:	// scale 8
 			if(bIndex == 4)		// Nothing
 			{
-				insCurIns.wszScaleIndex[0] = 0;	// must not print this in DUMP
+				pstState->insCurIns.wszScaleIndex[0] = 0;	// must not print this in DUMP
 				break;
 			}
 
-			StringCchPrintf(insCurIns.wszScaleIndex, _countof(insCurIns.wszScaleIndex), L"%s*8",
+			StringCchPrintf(pstState->insCurIns.wszScaleIndex, _countof(pstState->insCurIns.wszScaleIndex), L"%s*8",
 							awszRegCodes32[bIndex]);
 			break;
 
@@ -2154,39 +2304,39 @@ BOOL fStateSIB()
 		 *	disp32[EBP][index] (MOD=10).
 		 * *****************************************************************************/
 		
-		// Get Mod field of ModRM byte: pByteInCode-2 because we have moved past
+		// Get Mod field of ModRM byte: pstState->pbCurrentCodePtr-2 because we have moved past
 		// the SIB byte by now.
-		Util_vSplitModRMByte(*(pByteInCode-2), &bMod, NULL, NULL);
+		Util_vSplitModRMByte(*(pstState->pbCurrentCodePtr-2), &bMod, NULL, NULL);
 		ASSERT(bMod >= 0 && bMod <= 2);	// ASSERT always??
 		if(bMod == 0)
 		{
-			insCurIns.wszBase[0] = 0;
-			insCurIns.bDispType = DISP_32BIT;
+			pstState->insCurIns.wszBase[0] = 0;
+			pstState->insCurIns.bDispType = DISP_32BIT;
 		}
 		else
 		{	// ebp is base; disp type has been set in MODRM already
-			StringCchCopy(insCurIns.wszBase, _countof(insCurIns.wszBase), awszRegCodes32[REGCODE_EBP]);
+			StringCchCopy(pstState->insCurIns.wszBase, _countof(pstState->insCurIns.wszBase), awszRegCodes32[REGCODE_EBP]);
 			//if(bMod == 1)
-			//	insCurIns.bDispType = DISP_8BIT;
+			//	pstState->insCurIns.bDispType = DISP_8BIT;
 			//else
-			//	insCurIns.bDispType = DISP_32BIT;
+			//	pstState->insCurIns.bDispType = DISP_32BIT;
 		}
-		insCurIns.fDisp = TRUE;
-		dsNextState = DASM_STATE_DISP;
+		pstState->insCurIns.fDisp = TRUE;
+		pstState->dsNextState = DASM_STATE_DISP;
 	}
 	else
 	{
 		// todo: return value
-		StringCchCopy(insCurIns.wszBase, _countof(insCurIns.wszBase), awszRegCodes32[bBase]);
+		StringCchCopy(pstState->insCurIns.wszBase, _countof(pstState->insCurIns.wszBase), awszRegCodes32[bBase]);
 
-		if(insCurIns.fDisp)
+		if(pstState->insCurIns.fDisp)
 			// No need to determine size of disp here; done earlier.
-			dsNextState = DASM_STATE_DISP;
-		else if(insCurIns.fImm)
+			pstState->dsNextState = DASM_STATE_DISP;
+		else if(pstState->insCurIns.fImm)
 			// No need to determine size of imm here; done earlier.
-			dsNextState = DASM_STATE_IMM;
+			pstState->dsNextState = DASM_STATE_IMM;
 		else
-			dsNextState = DASM_STATE_DUMP;
+			pstState->dsNextState = DASM_STATE_DUMP;
 	}
 
 	return TRUE;
@@ -2208,32 +2358,32 @@ BOOL fStateSIB()
  * RetVal:
  *		TRUE/FALSE depending on whether there was an error or not.
  */
-BOOL fStateDisp()
+BOOL fStateDisp(PDASMSTATE pstState)
 {
-	// pByteInCode must now be pointing to the disp byte
-	// insCurIns.bDispType tells us the size of disp to read
+	// pstState->pbCurrentCodePtr must now be pointing to the disp byte
+	// pstState->insCurIns.bDispType tells us the size of disp to read
 
-	ASSERT(insCurIns.bDispType == DISP_8BIT 
-			|| insCurIns.bDispType == DISP_32BIT);
+	ASSERT(pstState->insCurIns.bDispType == DISP_8BIT 
+			|| pstState->insCurIns.bDispType == DISP_32BIT);
 
-	if(insCurIns.bDispType == DISP_8BIT)
+	if(pstState->insCurIns.bDispType == DISP_8BIT)
 	{
-		insCurIns.iDisp = (char)*pByteInCode;
-		++pByteInCode;
-		++nBytesCurIns;
+		pstState->insCurIns.iDisp = (char)*pstState->pbCurrentCodePtr;
+		++pstState->pbCurrentCodePtr;
+		++pstState->nBytesCurIns;
 	}
-	else if(insCurIns.bDispType == DISP_32BIT)
+	else if(pstState->insCurIns.bDispType == DISP_32BIT)
 	{
-		insCurIns.iDisp = (INT)*((INT*)pByteInCode);
-		pByteInCode += sizeof(INT);
-		nBytesCurIns += sizeof(INT);
+		pstState->insCurIns.iDisp = (INT)*((INT*)pstState->pbCurrentCodePtr);
+		pstState->pbCurrentCodePtr += sizeof(INT);
+		pstState->nBytesCurIns += sizeof(INT);
 	}
 
-	if(insCurIns.fImm)
+	if(pstState->insCurIns.fImm)
 	{
-		dsNextState = DASM_STATE_IMM;
+		pstState->dsNextState = DASM_STATE_IMM;
 		#ifdef _DEBUG
-			if(insCurIns.bImmType == IMM_UNDEF)
+			if(pstState->insCurIns.bImmType == IMM_UNDEF)
 			{
 				wprintf_s(L"fStateDisp(): bImmType UNDEF\n");
 				return FALSE;
@@ -2243,7 +2393,7 @@ BOOL fStateDisp()
 	}
 
 	// No imm byte: no other byte to process for current instruction
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 
 }// fStateDisp()
@@ -2263,111 +2413,111 @@ BOOL fStateDisp()
  * RetVal:
  *		TRUE/FALSE depending on whether there was an error or not.
  */
-BOOL fStateImm()
+BOOL fStateImm(PDASMSTATE pstState)
 {
 
-	// Read the bImmType size of data from pByteInCode
+	// Read the bImmType size of data from pstState->pbCurrentCodePtr
 
-	if(insCurIns.fCodeOffset)
+	if(pstState->insCurIns.fCodeOffset)
 	{
 		// Offset is added to the EIP, which is nothing but the 
-		// value of pByteInCode after reading the offset value
-		// because pByteInCode will then be pointing to the next
+		// value of pstState->pbCurrentCodePtr after reading the offset value
+		// because pstState->pbCurrentCodePtr will then be pointing to the next
 		// instruction.
 
 		// Offset is a signed value
 
-		// Store the offset value in insCurIns.iImm and let DUMP take care of 
+		// Store the offset value in pstState->insCurIns.iImm and let DUMP take care of 
 		// calculating the actual address
 
-		if(insCurIns.bImmType == IMM_8BIT)
+		if(pstState->insCurIns.bImmType == IMM_8BIT)
 		{
-			// Do not write insCurIns.iImm = (INT)*pByteInCode : causes compiler to emit
+			// Do not write pstState->insCurIns.iImm = (INT)*pstState->pbCurrentCodePtr : causes compiler to emit
 			// a movzx instruction but we need a movsx really
-			insCurIns.iImm = (INT)(CHAR)(*pByteInCode);
-			++pByteInCode;
-			++nBytesCurIns;
+			pstState->insCurIns.iImm = (INT)(CHAR)(*pstState->pbCurrentCodePtr);
+			++pstState->pbCurrentCodePtr;
+			++pstState->nBytesCurIns;
 		}
-		else if(insCurIns.bImmType == IMM_16BIT)
+		else if(pstState->insCurIns.bImmType == IMM_16BIT)
 		{
-			insCurIns.iImm = (SHORT)(*(SHORT*)pByteInCode);
-			pByteInCode += sizeof(SHORT);
-			nBytesCurIns += sizeof(SHORT);
+			pstState->insCurIns.iImm = (SHORT)(*(SHORT*)pstState->pbCurrentCodePtr);
+			pstState->pbCurrentCodePtr += sizeof(SHORT);
+			pstState->nBytesCurIns += sizeof(SHORT);
 		}
-		else if(insCurIns.bImmType == IMM_32BIT)
+		else if(pstState->insCurIns.bImmType == IMM_32BIT)
 		{
-			insCurIns.iImm = (INT)(*(INT*)pByteInCode);
-			pByteInCode += sizeof(INT);
-			nBytesCurIns += sizeof(INT);
+			pstState->insCurIns.iImm = (INT)(*(INT*)pstState->pbCurrentCodePtr);
+			pstState->pbCurrentCodePtr += sizeof(INT);
+			pstState->nBytesCurIns += sizeof(INT);
 		}
 		else
 		{
-			wprintf_s(L"fStateImm(): Invalid code offset size %u\n", insCurIns.bImmType);
+			wprintf_s(L"fStateImm(): Invalid code offset size %u\n", pstState->insCurIns.bImmType);
 			return FALSE;
 		}
 
-		dsNextState = DASM_STATE_DUMP;
+		pstState->dsNextState = DASM_STATE_DUMP;
 		return TRUE;
 	}
 
-	if(insCurIns.fDataOffset)
+	if(pstState->insCurIns.fDataOffset)
 	{
 		// moffs8/moffs16/moffs32
 
 		// The data offset encoded as an immediate value can be either
 		// 16/32 bits.
-		if(insCurIns.bImmType == IMM_16BIT)
+		if(pstState->insCurIns.bImmType == IMM_16BIT)
 		{
-			insCurIns.iImm = (SHORT)(*(SHORT*)pByteInCode);
-			pByteInCode += sizeof(SHORT);
-			nBytesCurIns += sizeof(SHORT);
+			pstState->insCurIns.iImm = (SHORT)(*(SHORT*)pstState->pbCurrentCodePtr);
+			pstState->pbCurrentCodePtr += sizeof(SHORT);
+			pstState->nBytesCurIns += sizeof(SHORT);
 		}
-		else if(insCurIns.bImmType == IMM_32BIT)
+		else if(pstState->insCurIns.bImmType == IMM_32BIT)
 		{
-			insCurIns.iImm = (INT)(*(INT*)pByteInCode);
-			pByteInCode += sizeof(INT);
-			nBytesCurIns += sizeof(INT);
+			pstState->insCurIns.iImm = (INT)(*(INT*)pstState->pbCurrentCodePtr);
+			pstState->pbCurrentCodePtr += sizeof(INT);
+			pstState->nBytesCurIns += sizeof(INT);
 		}
 		else
 		{
-			wprintf_s(L"fStateImm(): Invalid data offset size %u\n", insCurIns.bImmType);
+			wprintf_s(L"fStateImm(): Invalid data offset size %u\n", pstState->insCurIns.bImmType);
 			return FALSE;
 		}
 
-		dsNextState = DASM_STATE_DUMP;
+		pstState->dsNextState = DASM_STATE_DUMP;
 		return TRUE;
 	}// if fDataOffset
 
 	// Not a code/data offset, just an immediate value, which is signed(!).
-	// Store into insCurIns.iImm and let DUMP take care of printing the value.
-	if(insCurIns.bImmType == IMM_8BIT)
+	// Store into pstState->insCurIns.iImm and let DUMP take care of printing the value.
+	if(pstState->insCurIns.bImmType == IMM_8BIT)
 	{
-		if(insCurIns.fImmSignEx)
-			insCurIns.iImm = (INT)(CHAR)*pByteInCode;
+		if(pstState->insCurIns.fImmSignEx)
+			pstState->insCurIns.iImm = (INT)(CHAR)*pstState->pbCurrentCodePtr;
 		else
-			insCurIns.iImm = (INT)*pByteInCode;
-		++pByteInCode;
-		++nBytesCurIns;
+			pstState->insCurIns.iImm = (INT)*pstState->pbCurrentCodePtr;
+		++pstState->pbCurrentCodePtr;
+		++pstState->nBytesCurIns;
 	}
-	else if(insCurIns.bImmType == IMM_16BIT)
+	else if(pstState->insCurIns.bImmType == IMM_16BIT)
 	{
-		insCurIns.iImm = (SHORT)(*(SHORT*)pByteInCode);
-		pByteInCode += sizeof(SHORT);
-		nBytesCurIns += sizeof(SHORT);
+		pstState->insCurIns.iImm = (SHORT)(*(SHORT*)pstState->pbCurrentCodePtr);
+		pstState->pbCurrentCodePtr += sizeof(SHORT);
+		pstState->nBytesCurIns += sizeof(SHORT);
 	}
-	else if(insCurIns.bImmType == IMM_32BIT)
+	else if(pstState->insCurIns.bImmType == IMM_32BIT)
 	{
-		insCurIns.iImm = (INT)(*(INT*)pByteInCode);
-		pByteInCode += sizeof(INT);
-		nBytesCurIns += sizeof(INT);
+		pstState->insCurIns.iImm = (INT)(*(INT*)pstState->pbCurrentCodePtr);
+		pstState->pbCurrentCodePtr += sizeof(INT);
+		pstState->nBytesCurIns += sizeof(INT);
 	}
 	else
 	{
-		wprintf_s(L"fStateImm(): Invalid bImmType %d\n", insCurIns.bImmType);
+		wprintf_s(L"fStateImm(): Invalid bImmType %d\n", pstState->insCurIns.bImmType);
 		return FALSE;
 	}
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 
 	return TRUE;
 }// fStateImm()
@@ -2379,15 +2529,37 @@ BOOL fStateImm()
  * *************************
  */
 
-BOOL fStateDumpOnOpcodeError()
+BOOL fStateDumpOnOpcodeError(PDASMSTATE pstState)
 {
 	// 1: address
-	wprintf_s(L"  %08X: ", (pByteInCode-nBytesCurIns)+lDelta);
-	wprintf_s(L"%02X\n", *(pByteInCode-nBytesCurIns));
+	wprintf_s(L"  %08X: ", (pstState->pbCurrentCodePtr-pstState->nBytesCurIns)+pstState->lDelta);
+	wprintf_s(L"%02X\n", *(pstState->pbCurrentCodePtr-pstState->nBytesCurIns));
 	return TRUE;
 }
 
-BOOL fStateDump()
+BOOL fStateDumpOnOpcodeError_ToString(PDASMSTATE pstState)
+{
+    DWORD nTotalCharsWritten = 0;
+    DWORD nTotalCharsCapacity = _countof(pstState->szDisassembledInst);
+    PWCHAR pszStrStart;
+
+    pszStrStart = pstState->szDisassembledInst;
+
+	// 1: address
+	nTotalCharsWritten += swprintf_s(
+                            pszStrStart, 
+                            nTotalCharsCapacity - nTotalCharsWritten, 
+                            L"  %08X: ", (pstState->pbCurrentCodePtr-pstState->nBytesCurIns)+pstState->lDelta);
+
+	swprintf_s(
+        pszStrStart + nTotalCharsWritten, 
+        nTotalCharsCapacity - nTotalCharsWritten, 
+        L"%02X\n", *(pstState->pbCurrentCodePtr-pstState->nBytesCurIns));
+	
+    return TRUE;
+}
+
+BOOL fStateDump(PDASMSTATE pstState)
 {
 	static WCHAR awszPrefixStr[][8] = { L"lock", L"repne", L"repe" };
 	static INT aiPrefixStrNChars[] = { 4, 5, 4 };
@@ -2402,13 +2574,13 @@ BOOL fStateDump()
 	// Eg.:	0040108F: 89 04 95 D0 60 D5 00	mov			dword ptr [edx*4+0D560D0h],eax
 
 	// 1: address
-	wprintf_s(L"  %08X: ", (pByteInCode-nBytesCurIns)+lDelta);
+	wprintf_s(L"  %08X: ", (pstState->pbCurrentCodePtr-pstState->nBytesCurIns)+pstState->lDelta);
 
 	// 2: Bytes that make up the current instruction
 	// Print the first 6 bytes on the current line; if there are more
 	// bytes remaining, then print them on the next line, later.
-	for(PBYTE pBytes = pByteInCode - nBytesCurIns;
-		pBytes < pByteInCode && nBytesPrinted < 6; 
+	for(PBYTE pBytes = pstState->pbCurrentCodePtr - pstState->nBytesCurIns;
+		pBytes < pstState->pbCurrentCodePtr && nBytesPrinted < 6; 
 		++pBytes, ++nBytesPrinted)
 	{
 		wprintf_s(L"%02X ", *pBytes);
@@ -2417,7 +2589,7 @@ BOOL fStateDump()
 	// Padding if there are < 6 bytes in the current instruction
 	// 3 space chars in each iteration because each byte printed
 	// occupies 3spaces. Eg.: "88 8C 05 "
-	for(INT nSpaces = nBytesCurIns; 
+	for(INT nSpaces = pstState->nBytesCurIns; 
 		nSpaces < 6; ++nSpaces)
 	{
 		wprintf_s(L"   ");
@@ -2432,9 +2604,9 @@ BOOL fStateDump()
 	 */
 
 	// 3: Print LOCK, REPx prefixes, if any
-	if(insCurIns.wPrefixTypes & PREFIX_LOCKREP)
+	if(pstState->insCurIns.wPrefixTypes & PREFIX_LOCKREP)
 	{
-		switch(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP])
+		switch(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP])
 		{
 			case 0xf0:	// lock
 				wprintf_s(L"%s ", awszPrefixStr[0]);
@@ -2442,14 +2614,14 @@ BOOL fStateDump()
 				break;
 
 			case 0xf2:	// repne
-				if(insCurIns.fSSEIns)	// no prefix if SSE prefix
+				if(pstState->insCurIns.fSSEIns)	// no prefix if SSE prefix
 					break;
 				wprintf_s(L"%s ", awszPrefixStr[1]);
 				nCharsMnemPrinted += aiPrefixStrNChars[1] + 1;
 				break;
 
 			case 0xf3:	// repe
-				if(insCurIns.fSSEIns)	// no prefix if SSE prefix
+				if(pstState->insCurIns.fSSEIns)	// no prefix if SSE prefix
 					break;
 				wprintf_s(L"%s ", awszPrefixStr[2]);
 				nCharsMnemPrinted += aiPrefixStrNChars[2] + 1;
@@ -2458,7 +2630,7 @@ BOOL fStateDump()
 			default:
 				#ifdef _DEBUG
 					wprintf_s(L"fStateDump(): Invalid prefix %d\n",
-								insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP]);
+								pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP]);
 					break;
 				#else
 					break;
@@ -2468,8 +2640,8 @@ BOOL fStateDump()
 	}// if there is a lock/rep prefix
 
 	// 4: Instruction mnemonic
-	wprintf_s(L"%s", wszCurInsStr);
-	nCharsMnemPrinted += wcslen(wszCurInsStr);
+	wprintf_s(L"%s", pstState->wszCurInsStr);
+	nCharsMnemPrinted += wcslen(pstState->wszCurInsStr);
 
 	// Now print padding spaces if required
 	for(register INT nPad = nCharsMnemPrinted;
@@ -2480,10 +2652,10 @@ BOOL fStateDump()
 	}
 
 	// 5: Operands
-	if(insCurIns.fModRM)
+	if(pstState->insCurIns.fModRM)
 	{
 		// Destination operand first
-		switch(insCurIns.OprTypeDes)
+		switch(pstState->insCurIns.OprTypeDes)
 		{
 			case OPRTYPE_ERROR:
 				// Instructions that do not have a ModRM/SIB byte would not
@@ -2493,44 +2665,44 @@ BOOL fStateDump()
 				break;
 
 			case OPRTYPE_REG:	// eax, ax, al, ...
-				wprintf_s(L"%s", insCurIns.wszCurInsStrDes);
+				wprintf_s(L"%s", pstState->insCurIns.wszCurInsStrDes);
 				break;
 
 			case OPRTYPE_MEM:	// dword ptr [eax], word ptr [ebx], ...
 			{
-				DUMP_vGetSegPrefix(insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
-				wprintf_s(L"%s%s[%s]", insCurIns.pwszPtrStr, pwszSegStr,
-							insCurIns.wszCurInsStrDes);
+				DUMP_vGetSegPrefix(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
+				wprintf_s(L"%s%s[%s]", pstState->insCurIns.pwszPtrStr, pwszSegStr,
+							pstState->insCurIns.wszCurInsStrDes);
 				break;
 			}
 
 			case OPRTYPE_MEM8:	// dword ptr [eax-4h], word ptr [ebx+10h], ...
 			{
-				DUMP_vGetSegPrefix(insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
-				if(insCurIns.iDisp >= 0)	// must include a '+'
-					wprintf_s(L"%s%s[%s+%02Xh]", insCurIns.pwszPtrStr, pwszSegStr,
-								insCurIns.wszCurInsStrDes, insCurIns.iDisp);
+				DUMP_vGetSegPrefix(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
+				if(pstState->insCurIns.iDisp >= 0)	// must include a '+'
+					wprintf_s(L"%s%s[%s+%02Xh]", pstState->insCurIns.pwszPtrStr, pwszSegStr,
+								pstState->insCurIns.wszCurInsStrDes, pstState->insCurIns.iDisp);
 				else
 				{
 					// Get the positive representation of the negative displacement and put a 
 					// '-' sign preceding it while printing. This makes it easier to spot
 					// positive and negative displacements (especially from ebp: diff b/w
 					// locals and arguments).
-					BYTE chDisp = (BYTE)insCurIns.iDisp;
+					BYTE chDisp = (BYTE)pstState->insCurIns.iDisp;
 					Util_vTwosComplementByte(chDisp, &chDisp);		// same variable as two parameters I know!
-					wprintf_s(L"%s%s[%s-%02Xh]", insCurIns.pwszPtrStr, pwszSegStr,
-								insCurIns.wszCurInsStrDes, chDisp);
+					wprintf_s(L"%s%s[%s-%02Xh]", pstState->insCurIns.pwszPtrStr, pwszSegStr,
+								pstState->insCurIns.wszCurInsStrDes, chDisp);
 				}
 				break;
 			}// case MEM8
 
 			case OPRTYPE_MEM32:
 			{
-				DUMP_vGetSegPrefix(insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
+				DUMP_vGetSegPrefix(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
 
 				// dumpbin appears to be doing it(2's compl thing) only for disp8, not disp32
-				wprintf_s(L"%s%s[%s+%Xh]", insCurIns.pwszPtrStr, pwszSegStr, 
-							insCurIns.wszCurInsStrDes, insCurIns.iDisp);
+				wprintf_s(L"%s%s[%s+%Xh]", pstState->insCurIns.pwszPtrStr, pwszSegStr, 
+							pstState->insCurIns.wszCurInsStrDes, pstState->insCurIns.iDisp);
 				break;
 			}// case MEM32
 
@@ -2540,72 +2712,72 @@ BOOL fStateDump()
 			 */
 			case OPRTYPE_SIB8:
 			{
-				if(insCurIns.fDisp)
+				if(pstState->insCurIns.fDisp)
 				{
 					BYTE chDisp;
 
-					if( insCurIns.wszBase[0] == 0 )
+					if( pstState->insCurIns.wszBase[0] == 0 )
 					{
-						if(insCurIns.wszScaleIndex[0] == 0)	// only a disp
-							wprintf_s(L"%s[%02Xh]", insCurIns.pwszPtrStr, insCurIns.iDisp);
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// only a disp
+							wprintf_s(L"%s[%02Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.iDisp);
 						else	// scaled-index+disp
 						{
-							if(insCurIns.iDisp >= 0)
-								wprintf_s(L"%s[%s+%02Xh]", insCurIns.pwszPtrStr, insCurIns.wszScaleIndex, insCurIns.iDisp);
+							if(pstState->insCurIns.iDisp >= 0)
+								wprintf_s(L"%s[%s+%02Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszScaleIndex, pstState->insCurIns.iDisp);
 							else
 							{
-								chDisp = (BYTE)insCurIns.iDisp;
+								chDisp = (BYTE)pstState->insCurIns.iDisp;
 								Util_vTwosComplementByte(chDisp, &chDisp);		// same variable as two parameters I know!
-								wprintf_s(L"%s[%s-%02Xh]", insCurIns.pwszPtrStr, insCurIns.wszScaleIndex, chDisp);
+								wprintf_s(L"%s[%s-%02Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszScaleIndex, chDisp);
 							}
 						}
 					}
 					else
 					{
-						if(insCurIns.wszScaleIndex[0] == 0)	// base + disp
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// base + disp
 						{
-							if(insCurIns.iDisp >= 0)
-								wprintf_s(L"%s[%s+%02Xh]", insCurIns.pwszPtrStr, insCurIns.wszBase, insCurIns.iDisp);
+							if(pstState->insCurIns.iDisp >= 0)
+								wprintf_s(L"%s[%s+%02Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszBase, pstState->insCurIns.iDisp);
 							else
 							{
-								chDisp = (BYTE)insCurIns.iDisp;
+								chDisp = (BYTE)pstState->insCurIns.iDisp;
 								Util_vTwosComplementByte(chDisp, &chDisp);		// same variable as two parameters I know!
-								wprintf_s(L"%s[%s-%02Xh]", insCurIns.pwszPtrStr, insCurIns.wszBase, chDisp);
+								wprintf_s(L"%s[%s-%02Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszBase, chDisp);
 							}
 						}
 						else	// base+scaled-index+disp
 						{
-							if(insCurIns.iDisp >= 0)
-								wprintf_s(L"%s[%s+%s+%02Xh]", insCurIns.pwszPtrStr,
-										insCurIns.wszBase, insCurIns.wszScaleIndex, insCurIns.iDisp);
+							if(pstState->insCurIns.iDisp >= 0)
+								wprintf_s(L"%s[%s+%s+%02Xh]", pstState->insCurIns.pwszPtrStr,
+										pstState->insCurIns.wszBase, pstState->insCurIns.wszScaleIndex, pstState->insCurIns.iDisp);
 							else
 							{
-								chDisp = (BYTE)insCurIns.iDisp;
+								chDisp = (BYTE)pstState->insCurIns.iDisp;
 								Util_vTwosComplementByte(chDisp, &chDisp);		// same variable as two parameters I know!
-								wprintf_s(L"%s[%s+%s-%02Xh]", insCurIns.pwszPtrStr,
-										insCurIns.wszBase, insCurIns.wszScaleIndex, chDisp);
+								wprintf_s(L"%s[%s+%s-%02Xh]", pstState->insCurIns.pwszPtrStr,
+										pstState->insCurIns.wszBase, pstState->insCurIns.wszScaleIndex, chDisp);
 							}
 						}
 					}// if base
 				}
 				else
 				{
-					if( insCurIns.wszBase[0] == 0 )
+					if( pstState->insCurIns.wszBase[0] == 0 )
 					{
-						if(insCurIns.wszScaleIndex[0] == 0)	// todo: no scale, no index, no base!! error??
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// todo: no scale, no index, no base!! error??
 						{
 							wprintf_s(L"fStateDump(): SIB no base, no SI, no disp!!\n");
 							return FALSE;
 						}
 						else	// scaled-index
-							wprintf_s(L"%s[%s]", insCurIns.pwszPtrStr, insCurIns.wszScaleIndex);
+							wprintf_s(L"%s[%s]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszScaleIndex);
 					}
 					else
 					{
-						if(insCurIns.wszScaleIndex[0] == 0)	// todo: only base??
-							wprintf_s(L"%s[%s]", insCurIns.pwszPtrStr, insCurIns.wszBase);
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// todo: only base??
+							wprintf_s(L"%s[%s]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszBase);
 						else	// base + scaled-index
-							wprintf_s(L"%s[%s+%s]", insCurIns.pwszPtrStr, insCurIns.wszBase, insCurIns.wszScaleIndex);
+							wprintf_s(L"%s[%s+%s]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszBase, pstState->insCurIns.wszScaleIndex);
 					}
 				}// if fDisp
 
@@ -2615,42 +2787,42 @@ BOOL fStateDump()
 			case OPRTYPE_SIB:
 			case OPRTYPE_SIB32:
 			{
-				if(insCurIns.fDisp)
+				if(pstState->insCurIns.fDisp)
 				{
-					if( insCurIns.wszBase[0] == 0 )
+					if( pstState->insCurIns.wszBase[0] == 0 )
 					{
-						if(insCurIns.wszScaleIndex[0] == 0)	// only a disp
-							wprintf_s(L"%s[%Xh]", insCurIns.pwszPtrStr, insCurIns.iDisp);
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// only a disp
+							wprintf_s(L"%s[%Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.iDisp);
 						else	// scaled-index+disp
-							wprintf_s(L"%s[%s+%Xh]", insCurIns.pwszPtrStr, insCurIns.wszScaleIndex, insCurIns.iDisp);
+							wprintf_s(L"%s[%s+%Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszScaleIndex, pstState->insCurIns.iDisp);
 					}
 					else
 					{
-						if(insCurIns.wszScaleIndex[0] == 0)	// base + disp
-							wprintf_s(L"%s[%s+%Xh]", insCurIns.pwszPtrStr, insCurIns.wszBase, insCurIns.iDisp);
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// base + disp
+							wprintf_s(L"%s[%s+%Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszBase, pstState->insCurIns.iDisp);
 						else	// base+scaled-index+disp
-							wprintf_s(L"%s[%s+%s+%Xh]", insCurIns.pwszPtrStr,
-									insCurIns.wszBase, insCurIns.wszScaleIndex, insCurIns.iDisp);
+							wprintf_s(L"%s[%s+%s+%Xh]", pstState->insCurIns.pwszPtrStr,
+									pstState->insCurIns.wszBase, pstState->insCurIns.wszScaleIndex, pstState->insCurIns.iDisp);
 					}
 				}
 				else
 				{
-					if( insCurIns.wszBase[0] == 0 )
+					if( pstState->insCurIns.wszBase[0] == 0 )
 					{
-						if(insCurIns.wszScaleIndex[0] == 0)	// todo: no scale, no index, no base!! error??
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// todo: no scale, no index, no base!! error??
 						{
 							wprintf_s(L"fStateDump(): SIB no base, no SI, no disp!!\n");
 							return FALSE;
 						}
 						else	// scaled-index
-							wprintf_s(L"%s[%s]", insCurIns.pwszPtrStr, insCurIns.wszScaleIndex);
+							wprintf_s(L"%s[%s]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszScaleIndex);
 					}
 					else
 					{
-						if(insCurIns.wszScaleIndex[0] == 0)	// todo: only base??
-							wprintf_s(L"%s[%s]", insCurIns.pwszPtrStr, insCurIns.wszBase);
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// todo: only base??
+							wprintf_s(L"%s[%s]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszBase);
 						else	// base + scaled-index
-							wprintf_s(L"%s[%s+%s]", insCurIns.pwszPtrStr, insCurIns.wszBase, insCurIns.wszScaleIndex);
+							wprintf_s(L"%s[%s+%s]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszBase, pstState->insCurIns.wszScaleIndex);
 					}
 				}// if fDisp
 
@@ -2659,47 +2831,47 @@ BOOL fStateDump()
 
 			case OPRTYPE_DISP32:	// ds:[disp32]	ds:[0040BD08h]
 			{
-				if(insCurIns.wPrefixTypes & PREFIX_SEG)
+				if(pstState->insCurIns.wPrefixTypes & PREFIX_SEG)
 				{
 					// We have a segment override prefix. Get it.
-					DUMP_vGetSegPrefix(insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
+					DUMP_vGetSegPrefix(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
 
-					wprintf_s(L"%s%s:[%08Xh]", insCurIns.pwszPtrStr, pwszSegStr, insCurIns.iDisp);
+					wprintf_s(L"%s%s:[%08Xh]", pstState->insCurIns.pwszPtrStr, pwszSegStr, pstState->insCurIns.iDisp);
 				}
 				else
 				{
 					// Default to "ds:" if there is no segment override prefix
-					wprintf_s(L"%s%s:[%08Xh]", insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_DS], insCurIns.iDisp);
+					wprintf_s(L"%s%s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_DS], pstState->insCurIns.iDisp);
 				}
 
-				//switch(insCurIns.abPrefixes[PREFIX_INDEX_SEG])
+				//switch(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG])
 				//{
 				//	case OPC_PREFIX_SEGOVR_ES:
-				//		wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_ES], insCurIns.iDisp);
+				//		wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_ES], pstState->insCurIns.iDisp);
 				//		break;
 
 				//	case OPC_PREFIX_SEGOVR_CS:
-				//		wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_CS], insCurIns.iDisp);
+				//		wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_CS], pstState->insCurIns.iDisp);
 				//		break;
 
 				//	case OPC_PREFIX_SEGOVR_SS:
-				//		wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_SS], insCurIns.iDisp);
+				//		wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_SS], pstState->insCurIns.iDisp);
 				//		break;
 
 				//	case OPC_PREFIX_SEGOVR_DS:
-				//		wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_DS], insCurIns.iDisp);
+				//		wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_DS], pstState->insCurIns.iDisp);
 				//		break;
 
 				//	case OPC_PREFIX_SEGOVR_FS:
-				//		wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_FS], insCurIns.iDisp);
+				//		wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_FS], pstState->insCurIns.iDisp);
 				//		break;
 
 				//	case OPC_PREFIX_SEGOVR_GS:
-				//		wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_GS], insCurIns.iDisp);
+				//		wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_GS], pstState->insCurIns.iDisp);
 				//		break;
 
 				//	default:	// redundant but makes it easy to understand
-				//		wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_DS], insCurIns.iDisp);
+				//		wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_DS], pstState->insCurIns.iDisp);
 				//		break;
 				//}
 			}// case OPRTYPE_DISP32
@@ -2710,11 +2882,11 @@ BOOL fStateDump()
 		}// switch(OprTypeDes)
 
 		// ',' between dest and src operands only if both are present
-		if(insCurIns.fDesStrSet && insCurIns.fSrcStrSet)
+		if(pstState->insCurIns.fDesStrSet && pstState->insCurIns.fSrcStrSet)
 			wprintf_s(L",");
 
 		// Now the source operand
-		switch(insCurIns.OprTypeSrc)
+		switch(pstState->insCurIns.OprTypeSrc)
 		{
 			case OPRTYPE_ERROR:
 				// Instructions that do not have a ModRM/SIB byte would not
@@ -2722,44 +2894,44 @@ BOOL fStateDump()
 				break;
 
 			case OPRTYPE_REG:	// eax, ax, al, ...
-				wprintf_s(L"%s", insCurIns.wszCurInsStrSrc);
+				wprintf_s(L"%s", pstState->insCurIns.wszCurInsStrSrc);
 				break;
 
 			case OPRTYPE_MEM:	// dword ptr [eax], word ptr [ebx], ...
 			{
-				DUMP_vGetSegPrefix(insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
-				wprintf_s(L"%s%s[%s]", insCurIns.pwszPtrStr, pwszSegStr,
-							insCurIns.wszCurInsStrSrc);
+				DUMP_vGetSegPrefix(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
+				wprintf_s(L"%s%s[%s]", pstState->insCurIns.pwszPtrStr, pwszSegStr,
+							pstState->insCurIns.wszCurInsStrSrc);
 				break;
 			}
 
 			case OPRTYPE_MEM8:	// dword ptr [eax-4h], word ptr [ebx+10h], ...
 			{
-				DUMP_vGetSegPrefix(insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
-				if(insCurIns.iDisp >= 0)	// must include a '+'
-					wprintf_s(L"%s%s[%s+%Xh]", insCurIns.pwszPtrStr, pwszSegStr, 
-								insCurIns.wszCurInsStrSrc, insCurIns.iDisp);
+				DUMP_vGetSegPrefix(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
+				if(pstState->insCurIns.iDisp >= 0)	// must include a '+'
+					wprintf_s(L"%s%s[%s+%Xh]", pstState->insCurIns.pwszPtrStr, pwszSegStr, 
+								pstState->insCurIns.wszCurInsStrSrc, pstState->insCurIns.iDisp);
 				else
 				{
 					// Get the positive representation of the negative displacement and put a 
 					// '-' sign preceding it while printing. This makes it easier to spot
 					// positive and negative displacements (especially from ebp: diff b/w
 					// locals and arguments).
-					BYTE chDisp = (BYTE)insCurIns.iDisp;
+					BYTE chDisp = (BYTE)pstState->insCurIns.iDisp;
 					Util_vTwosComplementByte(chDisp, &chDisp);		// same variable as two parameters I know!
-					wprintf_s(L"%s%s[%s-%Xh]", insCurIns.pwszPtrStr, pwszSegStr, 
-								insCurIns.wszCurInsStrSrc, chDisp);
+					wprintf_s(L"%s%s[%s-%Xh]", pstState->insCurIns.pwszPtrStr, pwszSegStr, 
+								pstState->insCurIns.wszCurInsStrSrc, chDisp);
 				}
 				break;
 			}// case MEM8
 
 			case OPRTYPE_MEM32:
 			{
-				DUMP_vGetSegPrefix(insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
+				DUMP_vGetSegPrefix(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
 
 				// dumpbin appears to be doing it(2's compl thing) only for disp8, not disp32
-				wprintf_s(L"%s%s[%s+%Xh]", insCurIns.pwszPtrStr, pwszSegStr, 
-							insCurIns.wszCurInsStrSrc, insCurIns.iDisp);
+				wprintf_s(L"%s%s[%s+%Xh]", pstState->insCurIns.pwszPtrStr, pwszSegStr, 
+							pstState->insCurIns.wszCurInsStrSrc, pstState->insCurIns.iDisp);
 				break;
 			}// case MEM32
 
@@ -2767,42 +2939,42 @@ BOOL fStateDump()
 			case OPRTYPE_SIB8:
 			case OPRTYPE_SIB32:
 			{
-				if(insCurIns.fDisp)
+				if(pstState->insCurIns.fDisp)
 				{
-					if( insCurIns.wszBase[0] == 0 )
+					if( pstState->insCurIns.wszBase[0] == 0 )
 					{
-						if(insCurIns.wszScaleIndex[0] == 0)	// only a disp
-							wprintf_s(L"%s[%Xh]", insCurIns.pwszPtrStr, insCurIns.iDisp);
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// only a disp
+							wprintf_s(L"%s[%Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.iDisp);
 						else	// scaled-index+disp
-							wprintf_s(L"%s[%s+%Xh]", insCurIns.pwszPtrStr, insCurIns.wszScaleIndex, insCurIns.iDisp);
+							wprintf_s(L"%s[%s+%Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszScaleIndex, pstState->insCurIns.iDisp);
 					}
 					else
 					{
-						if(insCurIns.wszScaleIndex[0] == 0)	// base + disp
-							wprintf_s(L"%s[%s+%Xh]", insCurIns.pwszPtrStr, insCurIns.wszBase, insCurIns.iDisp);
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// base + disp
+							wprintf_s(L"%s[%s+%Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszBase, pstState->insCurIns.iDisp);
 						else	// base+scaled-index+disp
-							wprintf_s(L"%s[%s+%s+%Xh]", insCurIns.pwszPtrStr,
-									insCurIns.wszBase, insCurIns.wszScaleIndex, insCurIns.iDisp);
+							wprintf_s(L"%s[%s+%s+%Xh]", pstState->insCurIns.pwszPtrStr,
+									pstState->insCurIns.wszBase, pstState->insCurIns.wszScaleIndex, pstState->insCurIns.iDisp);
 					}
 				}
 				else
 				{
-					if( insCurIns.wszBase[0] == 0 )
+					if( pstState->insCurIns.wszBase[0] == 0 )
 					{
-						if(insCurIns.wszScaleIndex[0] == 0)	// todo: no scale, no index, no base!! error??
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// todo: no scale, no index, no base!! error??
 						{
 							wprintf_s(L"fStateDump(): SIB no base, no SI, no disp!!\n");
 							return FALSE;
 						}
 						else	// scaled-index
-							wprintf_s(L"%s[%s]", insCurIns.pwszPtrStr, insCurIns.wszScaleIndex);
+							wprintf_s(L"%s[%s]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszScaleIndex);
 					}
 					else
 					{
-						if(insCurIns.wszScaleIndex[0] == 0)	// todo: only base??
-							wprintf_s(L"%s[%s]", insCurIns.pwszPtrStr, insCurIns.wszBase);
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// todo: only base??
+							wprintf_s(L"%s[%s]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszBase);
 						else	// base + scaled-index
-							wprintf_s(L"%s[%s+%s]", insCurIns.pwszPtrStr, insCurIns.wszBase, insCurIns.wszScaleIndex);
+							wprintf_s(L"%s[%s+%s]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszBase, pstState->insCurIns.wszScaleIndex);
 					}
 				}// if fDisp
 
@@ -2813,48 +2985,48 @@ BOOL fStateDump()
 			{
 				WCHAR *pwszSegStr = NULL;
 
-				if(insCurIns.wPrefixTypes & PREFIX_SEG)
+				if(pstState->insCurIns.wPrefixTypes & PREFIX_SEG)
 				{
 					// We have a segment override prefix. Get it.
-					DUMP_vGetSegPrefix(insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
+					DUMP_vGetSegPrefix(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
 
-					wprintf_s(L"%s%s:[%08Xh]", insCurIns.pwszPtrStr, pwszSegStr, insCurIns.iDisp);
+					wprintf_s(L"%s%s:[%08Xh]", pstState->insCurIns.pwszPtrStr, pwszSegStr, pstState->insCurIns.iDisp);
 				}
 				else
 				{
 					// Default to "ds:" if there is no segment override prefix
-					wprintf_s(L"%s%s:[%08Xh]", insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_DS], insCurIns.iDisp);
+					wprintf_s(L"%s%s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_DS], pstState->insCurIns.iDisp);
 				}
 				
 
-			//	switch(insCurIns.abPrefixes[PREFIX_INDEX_SEG])
+			//	switch(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG])
 			//	{
 			//		case OPC_PREFIX_SEGOVR_ES:
-			//			wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_ES], insCurIns.iDisp);
+			//			wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_ES], pstState->insCurIns.iDisp);
 			//			break;
 
 			//		case OPC_PREFIX_SEGOVR_CS:
-			//			wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_CS], insCurIns.iDisp);
+			//			wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_CS], pstState->insCurIns.iDisp);
 			//			break;
 
 			//		case OPC_PREFIX_SEGOVR_SS:
-			//			wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_SS], insCurIns.iDisp);
+			//			wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_SS], pstState->insCurIns.iDisp);
 			//			break;
 
 			//		case OPC_PREFIX_SEGOVR_DS:
-			//			wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_DS], insCurIns.iDisp);
+			//			wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_DS], pstState->insCurIns.iDisp);
 			//			break;
 
 			//		case OPC_PREFIX_SEGOVR_FS:
-			//			wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_FS], insCurIns.iDisp);
+			//			wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_FS], pstState->insCurIns.iDisp);
 			//			break;
 
 			//		case OPC_PREFIX_SEGOVR_GS:
-			//			wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_GS], insCurIns.iDisp);
+			//			wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_GS], pstState->insCurIns.iDisp);
 			//			break;
 
 			//		default:	// redundant but makes it easy to understand
-			//			wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_DS], insCurIns.iDisp);
+			//			wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_DS], pstState->insCurIns.iDisp);
 			//			break;
 			//	}
 			}// case OPRTYPE_DISP32
@@ -2874,67 +3046,67 @@ BOOL fStateDump()
 		// - Imm value is src
 		// - Code offset is src
 
-		if(insCurIns.fDesStrSet)
-			wprintf_s(L"%s", insCurIns.wszCurInsStrDes);
-		else if(insCurIns.fDataOffset && insCurIns.fSrcStrSet)
+		if(pstState->insCurIns.fDesStrSet)
+			wprintf_s(L"%s", pstState->insCurIns.wszCurInsStrDes);
+		else if(pstState->insCurIns.fDataOffset && pstState->insCurIns.fSrcStrSet)
 		{
 			// des not determined earlier but src has been determined
 			// and there is a data offset. So the data offset must be
 			// the des operand
-			DUMP_vDumpDataOffset();
-			insCurIns.fDesStrSet = TRUE;	// we have a des operand: print ',' later
+			DUMP_vDumpDataOffset(pstState);
+			pstState->insCurIns.fDesStrSet = TRUE;	// we have a des operand: print ',' later
 		}
 
-		if(insCurIns.fSrcStrSet)
+		if(pstState->insCurIns.fSrcStrSet)
 		{
 			// ',' between dest and src operands only if both are present
-			if(insCurIns.fDesStrSet)
+			if(pstState->insCurIns.fDesStrSet)
 				wprintf_s(L",");
-			wprintf_s(L"%s", insCurIns.wszCurInsStrSrc);
+			wprintf_s(L"%s", pstState->insCurIns.wszCurInsStrSrc);
 		}
-		else if(insCurIns.fDataOffset)
+		else if(pstState->insCurIns.fDataOffset)
 		{
 			// data offset must be the src operand
-			if(insCurIns.fDesStrSet)
+			if(pstState->insCurIns.fDesStrSet)
 				wprintf_s(L",");
-			DUMP_vDumpDataOffset();
-			insCurIns.fSrcStrSet = TRUE;	// we have a src operand: print ',' later
+			DUMP_vDumpDataOffset(pstState);
+			pstState->insCurIns.fSrcStrSet = TRUE;	// we have a src operand: print ',' later
 		}
 
 	}// if fModRM
 
 	// Now the third operand
-	if(insCurIns.fOpr3StrSet)
-		wprintf_s(L",%s", insCurIns.wszCurInsStrOpr3);
+	if(pstState->insCurIns.fOpr3StrSet)
+		wprintf_s(L",%s", pstState->insCurIns.wszCurInsStrOpr3);
 
 	// 6: Immediate value: imm or code or data offset
-	if(insCurIns.fImm)
+	if(pstState->insCurIns.fImm)
 	{									//  ud   8bit       16bit     32bit     48bit
  		static WCHAR awszFormatSpec[][6] = {L"", L"%02Xh", L"%04Xh", L"%08Xh", L"%Xh"};
 		
 		// todo: ASSERT in Release mode too??
-		ASSERT(insCurIns.bImmType >= IMM_UNDEF && insCurIns.bImmType <= IMM_48BIT);	// Array bounds checking
+		ASSERT(pstState->insCurIns.bImmType >= IMM_UNDEF && pstState->insCurIns.bImmType <= IMM_48BIT);	// Array bounds checking
 
 		// Preceding comma(',') if there was a prior operand
-		if(insCurIns.fDesStrSet || insCurIns.fSrcStrSet)	// checking src also because /digit type
+		if(pstState->insCurIns.fDesStrSet || pstState->insCurIns.fSrcStrSet)	// checking src also because /digit type
 			wprintf_s(L",");								// sets oprstr in src
 
-		wprintf_s(awszFormatSpec[insCurIns.bImmType], insCurIns.iImm);
+		wprintf_s(awszFormatSpec[pstState->insCurIns.bImmType], pstState->insCurIns.iImm);
 	}
-	else if(insCurIns.fCodeOffset)
+	else if(pstState->insCurIns.fCodeOffset)
 	{
 		// Preceding comma(',') if there was a prior operand
-		if(insCurIns.fDesStrSet || insCurIns.fSrcStrSet)	// checking src also because /digit type
+		if(pstState->insCurIns.fDesStrSet || pstState->insCurIns.fSrcStrSet)	// checking src also because /digit type
 			wprintf_s(L",");								// sets oprstr in src
 
-		LONG lTemp = lDelta + (LONG)pByteInCode;
+		LONG lTemp = pstState->lDelta + (LONG)pstState->pbCurrentCodePtr;
 
 		// 32bit address always; so %08X
-		wprintf_s(L"%08X", insCurIns.iImm + lTemp);
+		wprintf_s(L"%08X", pstState->insCurIns.iImm + lTemp);
 	}
-	//else if(insCurIns.fDataOffset)
+	//else if(pstState->insCurIns.fDataOffset)
 	//{
-	//	if(insCurIns.fSrcStrSet || insCurIns.fDesStrSet)	// checking both because A3 C4 ... MOV eax,
+	//	if(pstState->insCurIns.fSrcStrSet || pstState->insCurIns.fDesStrSet)	// checking both because A3 C4 ... MOV eax,
 	//		wprintf_s(L",");
 
 	//	/*
@@ -2944,82 +3116,82 @@ BOOL fStateDump()
 	//	 *		dword ptr ds:[0040B000h]
 	//	 *		word ptr ss:[0040B000h]
 	//	 */
-	//	 if( ! (insCurIns.wPrefixTypes & PREFIX_SEG) )	// ! higher precedence than &
+	//	 if( ! (pstState->insCurIns.wPrefixTypes & PREFIX_SEG) )	// ! higher precedence than &
 	//	 {
 	//		// No segment override prefix present, default to ds
-	//		if(insCurIns.bImmType == IMM_16BIT)
-	//			wprintf_s(L"%s ds:[%04Xh]", insCurIns.pwszPtrStr, insCurIns.iImm);
+	//		if(pstState->insCurIns.bImmType == IMM_16BIT)
+	//			wprintf_s(L"%s ds:[%04Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.iImm);
 	//		else
-	//			wprintf_s(L"%s ds:[%08Xh]", insCurIns.pwszPtrStr, insCurIns.iImm);
+	//			wprintf_s(L"%s ds:[%08Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.iImm);
 	//	 }
 	//	 else
 	//	 {
 	//		// There is a segment override prefix. Print the correct one
 	//		// by reading the stored prefix type in abPrefixes.
-	//		switch(insCurIns.abPrefixes[PREFIX_INDEX_SEG])
+	//		switch(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG])
 	//		{
 	//			case OPC_PREFIX_SEGOVR_ES:
-	//				if(insCurIns.bImmType == IMM_16BIT)
-	//					wprintf_s(L"%s %s:[%04Xh]", insCurIns.pwszPtrStr, 
-	//								awszSRegCodes[SREGCODE_ES], insCurIns.iImm);
+	//				if(pstState->insCurIns.bImmType == IMM_16BIT)
+	//					wprintf_s(L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_ES], pstState->insCurIns.iImm);
 	//				else
-	//					wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, 
-	//								awszSRegCodes[SREGCODE_ES], insCurIns.iImm);
+	//					wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_ES], pstState->insCurIns.iImm);
 	//				break;
 
 	//			case OPC_PREFIX_SEGOVR_CS:
-	//				if(insCurIns.bImmType == IMM_16BIT)
-	//					wprintf_s(L"%s %s:[%04Xh]", insCurIns.pwszPtrStr, 
-	//								awszSRegCodes[SREGCODE_CS], insCurIns.iImm);
+	//				if(pstState->insCurIns.bImmType == IMM_16BIT)
+	//					wprintf_s(L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_CS], pstState->insCurIns.iImm);
 	//				else
-	//					wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, 
-	//								awszSRegCodes[SREGCODE_CS], insCurIns.iImm);
+	//					wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_CS], pstState->insCurIns.iImm);
 	//				break;
 
 	//			case OPC_PREFIX_SEGOVR_SS:
-	//				if(insCurIns.bImmType == IMM_16BIT)
-	//					wprintf_s(L"%s %s:[%04Xh]", insCurIns.pwszPtrStr, 
-	//								awszSRegCodes[SREGCODE_SS], insCurIns.iImm);
+	//				if(pstState->insCurIns.bImmType == IMM_16BIT)
+	//					wprintf_s(L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_SS], pstState->insCurIns.iImm);
 	//				else
-	//					wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, 
-	//								awszSRegCodes[SREGCODE_SS], insCurIns.iImm);
+	//					wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_SS], pstState->insCurIns.iImm);
 	//				break;
 
 	//			case OPC_PREFIX_SEGOVR_DS:
-	//				if(insCurIns.bImmType == IMM_16BIT)
-	//					wprintf_s(L"%s %s:[%04Xh]", insCurIns.pwszPtrStr, 
-	//								awszSRegCodes[SREGCODE_DS], insCurIns.iImm);
+	//				if(pstState->insCurIns.bImmType == IMM_16BIT)
+	//					wprintf_s(L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_DS], pstState->insCurIns.iImm);
 	//				else
-	//					wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, 
-	//								awszSRegCodes[SREGCODE_DS], insCurIns.iImm);
+	//					wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_DS], pstState->insCurIns.iImm);
 	//				break;
 	//			
 	//			case OPC_PREFIX_SEGOVR_FS:
-	//				if(insCurIns.bImmType == IMM_16BIT)
-	//					wprintf_s(L"%s %s:[%04Xh]", insCurIns.pwszPtrStr, 
-	//								awszSRegCodes[SREGCODE_FS], insCurIns.iImm);
+	//				if(pstState->insCurIns.bImmType == IMM_16BIT)
+	//					wprintf_s(L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_FS], pstState->insCurIns.iImm);
 	//				else
-	//					wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, 
-	//								awszSRegCodes[SREGCODE_FS], insCurIns.iImm);
+	//					wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_FS], pstState->insCurIns.iImm);
 	//				break;
 	//			
 	//			case OPC_PREFIX_SEGOVR_GS:
-	//				if(insCurIns.bImmType == IMM_16BIT)
-	//					wprintf_s(L"%s %s:[%04Xh]", insCurIns.pwszPtrStr, 
-	//								awszSRegCodes[SREGCODE_GS], insCurIns.iImm);
+	//				if(pstState->insCurIns.bImmType == IMM_16BIT)
+	//					wprintf_s(L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_GS], pstState->insCurIns.iImm);
 	//				else
-	//					wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, 
-	//								awszSRegCodes[SREGCODE_GS], insCurIns.iImm);
+	//					wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_GS], pstState->insCurIns.iImm);
 	//				break;
 
 	//			default:	// Not a critical error
-	//				wprintf_s(L"fStateDump(): Invalid segovr prefix %xh\n", insCurIns.abPrefixes[PREFIX_INDEX_SEG]);
-	//				if(insCurIns.bImmType == IMM_16BIT)
-	//					wprintf_s(L"%s <>:[%04Xh]", insCurIns.pwszPtrStr, 
-	//								awszSRegCodes[SREGCODE_ES], insCurIns.iImm);
+	//				wprintf_s(L"fStateDump(): Invalid segovr prefix %xh\n", pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG]);
+	//				if(pstState->insCurIns.bImmType == IMM_16BIT)
+	//					wprintf_s(L"%s <>:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_ES], pstState->insCurIns.iImm);
 	//				else
-	//					wprintf_s(L"%s <>:[%08Xh]", insCurIns.pwszPtrStr, 
-	//								awszSRegCodes[SREGCODE_ES], insCurIns.iImm);
+	//					wprintf_s(L"%s <>:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_ES], pstState->insCurIns.iImm);
 	//				break;
 	//		}// switch(abPrefixes)
 	//	 
@@ -3031,7 +3203,7 @@ BOOL fStateDump()
 
 	// 8: Check if there are more bytes of the current instruction
 	// to print.
-	if(nBytesCurIns > 6)
+	if(pstState->nBytesCurIns > 6)
 	{
 		// In the earlier print loop, nBytesPrinted is incremented after 
 		// printing and before checking termination condition, so 
@@ -3043,8 +3215,8 @@ BOOL fStateDump()
 
 		// Start from where we left off earlier
 		register int nNewPrinted = 0;
-		for(PBYTE pBytes = pByteInCode - nBytesCurIns + nBytesPrinted;
-		pBytes < pByteInCode && nNewPrinted < nBytesCurIns;
+		for(PBYTE pBytes = pstState->pbCurrentCodePtr - pstState->nBytesCurIns + nBytesPrinted;
+		pBytes < pstState->pbCurrentCodePtr && nNewPrinted < pstState->nBytesCurIns;
 		++pBytes, ++nNewPrinted)
 		{
 			wprintf_s(L"%02X ", *pBytes);
@@ -3052,14 +3224,690 @@ BOOL fStateDump()
 		wprintf_s(L"\n");
 	}
 
-	dsNextState = DASM_STATE_RESET;
+	pstState->dsNextState = DASM_STATE_RESET;
 	return TRUE;
 
 }
 
-void DUMP_vDumpDataOffset()
+BOOL fStateDump_ToString(PDASMSTATE pstState)
 {
-	//if(insCurIns.fDesStrSet)
+	static WCHAR awszPrefixStr[][8] = { L"lock", L"repne", L"repe" };
+	static INT aiPrefixStrNChars[] = { 4, 5, 4 };
+
+	WCHAR *pwszSegStr = NULL;	// segment register, if any
+	
+	register INT nBytesPrinted = 0;
+	INT nCharsMnemPrinted = 0;
+
+    PWCHAR pszStrStart;
+    DWORD nTotalCharsCapacity;
+    DWORD nTotalCharsWritten;
+
+	// Eg.: 0040106F: 68 AD DE 00 00		push        0DEADh
+
+	// Eg.:	0040108F: 89 04 95 D0 60 D5 00	mov			dword ptr [edx*4+0D560D0h],eax
+
+    // Init
+    pszStrStart = pstState->szDisassembledInst;
+    nTotalCharsCapacity = _countof(pstState->szDisassembledInst);
+    nTotalCharsWritten = 0;
+
+	// 1: address
+    nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"  %08X: ", (pstState->pbCurrentCodePtr - pstState->nBytesCurIns)+pstState->lDelta);
+
+	// 2: Bytes that make up the current instruction
+	// Print the first 6 bytes on the current line; if there are more
+	// bytes remaining, then print them on the next line, later.
+	for(PBYTE pBytes = pstState->pbCurrentCodePtr - pstState->nBytesCurIns;
+		pBytes < pstState->pbCurrentCodePtr && nBytesPrinted < 6; 
+		++pBytes, ++nBytesPrinted)
+	{
+		nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%02X ", *pBytes);
+	}
+
+	// Padding if there are < 6 bytes in the current instruction
+	// 3 space chars in each iteration because each byte printed
+	// occupies 3spaces. Eg.: "88 8C 05 "
+	for(INT nSpaces = pstState->nBytesCurIns; 
+		nSpaces < 6; ++nSpaces)
+	{
+		nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"   ");
+	}
+
+	/*
+	 * Keeping track of the number of characters as part of the
+	 * instruction mnemonic so that the correct amount of padding
+	 * can be printed and sp the operands are properly aligned 
+	 * in every instruction. Instruction mnemonic includes prefixes
+	 * and the opcode mnemonic itself.
+	 */
+
+	// 3: Print LOCK, REPx prefixes, if any
+	if(pstState->insCurIns.wPrefixTypes & PREFIX_LOCKREP)
+	{
+		switch(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP])
+		{
+			case 0xf0:	// lock
+				nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s ", awszPrefixStr[0]);
+				nCharsMnemPrinted += aiPrefixStrNChars[0] + 1;	// +1 for a space char
+				break;
+
+			case 0xf2:	// repne
+				if(pstState->insCurIns.fSSEIns)	// no prefix if SSE prefix
+					break;
+				nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s ", awszPrefixStr[1]);
+				nCharsMnemPrinted += aiPrefixStrNChars[1] + 1;
+				break;
+
+			case 0xf3:	// repe
+				if(pstState->insCurIns.fSSEIns)	// no prefix if SSE prefix
+					break;
+				nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s ", awszPrefixStr[2]);
+				nCharsMnemPrinted += aiPrefixStrNChars[2] + 1;
+				break;
+
+			default:
+                    ASSERT(FALSE);
+					dbgwprintf(L"fStateDump(): Invalid prefix %d\n",
+								pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP]);
+					break;
+		}// switch()
+	
+	}// if there is a lock/rep prefix
+
+	// 4: Instruction mnemonic
+	nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s", pstState->wszCurInsStr);
+	nCharsMnemPrinted += wcslen(pstState->wszCurInsStr);
+
+	// Now print padding spaces if required
+	for(register INT nPad = nCharsMnemPrinted;
+		nPad <= NUM_CHARS_MNEMONIC;
+		++nPad)
+	{
+		nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L" ");
+	}
+
+	// 5: Operands
+	if(pstState->insCurIns.fModRM)
+	{
+		// Destination operand first
+		switch(pstState->insCurIns.OprTypeDes)
+		{
+			case OPRTYPE_ERROR:
+				// Instructions that do not have a ModRM/SIB byte would not
+				// set the OprTypeDes and it will be OPRTYPE_ERROR(=0).
+				// Or have a /digit ModRM byte, in which case it specifies only
+				// one operand and that is in the src str.
+				break;
+
+			case OPRTYPE_REG:	// eax, ax, al, ...
+				nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s", pstState->insCurIns.wszCurInsStrDes);
+				break;
+
+			case OPRTYPE_MEM:	// dword ptr [eax], word ptr [ebx], ...
+			{
+				DUMP_vGetSegPrefix(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
+				nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s%s[%s]", pstState->insCurIns.pwszPtrStr, pwszSegStr,
+							pstState->insCurIns.wszCurInsStrDes);
+				break;
+			}
+
+			case OPRTYPE_MEM8:	// dword ptr [eax-4h], word ptr [ebx+10h], ...
+			{
+				DUMP_vGetSegPrefix(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
+				if(pstState->insCurIns.iDisp >= 0)	// must include a '+'
+					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s%s[%s+%02Xh]", pstState->insCurIns.pwszPtrStr, pwszSegStr,
+								pstState->insCurIns.wszCurInsStrDes, pstState->insCurIns.iDisp);
+				else
+				{
+					// Get the positive representation of the negative displacement and put a 
+					// '-' sign preceding it while printing. This makes it easier to spot
+					// positive and negative displacements (especially from ebp: diff b/w
+					// locals and arguments).
+					BYTE chDisp = (BYTE)pstState->insCurIns.iDisp;
+					Util_vTwosComplementByte(chDisp, &chDisp);		// same variable as two parameters I know!
+					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s%s[%s-%02Xh]", pstState->insCurIns.pwszPtrStr, pwszSegStr,
+								pstState->insCurIns.wszCurInsStrDes, chDisp);
+				}
+				break;
+			}// case MEM8
+
+			case OPRTYPE_MEM32:
+			{
+				DUMP_vGetSegPrefix(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
+
+				// dumpbin appears to be doing it(2's compl thing) only for disp8, not disp32
+				nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s%s[%s+%Xh]", pstState->insCurIns.pwszPtrStr, pwszSegStr, 
+							pstState->insCurIns.wszCurInsStrDes, pstState->insCurIns.iDisp);
+				break;
+			}// case MEM32
+
+			/* Note:
+			 * There may be a displacement when Mod=0; although MODRM state does not know this,
+			 * SIB state does and sets fDisp=TRUE. So yes, we can combine all SIB oprtypes.
+			 */
+			case OPRTYPE_SIB8:
+			{
+				if(pstState->insCurIns.fDisp)
+				{
+					BYTE chDisp;
+
+					if( pstState->insCurIns.wszBase[0] == 0 )
+					{
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// only a disp
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%02Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.iDisp);
+						else	// scaled-index+disp
+						{
+							if(pstState->insCurIns.iDisp >= 0)
+								nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s+%02Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszScaleIndex, pstState->insCurIns.iDisp);
+							else
+							{
+								chDisp = (BYTE)pstState->insCurIns.iDisp;
+								Util_vTwosComplementByte(chDisp, &chDisp);		// same variable as two parameters I know!
+								nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s-%02Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszScaleIndex, chDisp);
+							}
+						}
+					}
+					else
+					{
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// base + disp
+						{
+							if(pstState->insCurIns.iDisp >= 0)
+								nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s+%02Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszBase, pstState->insCurIns.iDisp);
+							else
+							{
+								chDisp = (BYTE)pstState->insCurIns.iDisp;
+								Util_vTwosComplementByte(chDisp, &chDisp);		// same variable as two parameters I know!
+								nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s-%02Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszBase, chDisp);
+							}
+						}
+						else	// base+scaled-index+disp
+						{
+							if(pstState->insCurIns.iDisp >= 0)
+								nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s+%s+%02Xh]", pstState->insCurIns.pwszPtrStr,
+										pstState->insCurIns.wszBase, pstState->insCurIns.wszScaleIndex, pstState->insCurIns.iDisp);
+							else
+							{
+								chDisp = (BYTE)pstState->insCurIns.iDisp;
+								Util_vTwosComplementByte(chDisp, &chDisp);		// same variable as two parameters I know!
+								nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s+%s-%02Xh]", pstState->insCurIns.pwszPtrStr,
+										pstState->insCurIns.wszBase, pstState->insCurIns.wszScaleIndex, chDisp);
+							}
+						}
+					}// if base
+				}
+				else
+				{
+					if( pstState->insCurIns.wszBase[0] == 0 )
+					{
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// todo: no scale, no index, no base!! error??
+						{
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"fStateDump(): SIB no base, no SI, no disp!!\n");
+							return FALSE;
+						}
+						else	// scaled-index
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszScaleIndex);
+					}
+					else
+					{
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// todo: only base??
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszBase);
+						else	// base + scaled-index
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s+%s]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszBase, pstState->insCurIns.wszScaleIndex);
+					}
+				}// if fDisp
+
+				break;
+			}// SIB8
+
+			case OPRTYPE_SIB:
+			case OPRTYPE_SIB32:
+			{
+				if(pstState->insCurIns.fDisp)
+				{
+					if( pstState->insCurIns.wszBase[0] == 0 )
+					{
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// only a disp
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.iDisp);
+						else	// scaled-index+disp
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s+%Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszScaleIndex, pstState->insCurIns.iDisp);
+					}
+					else
+					{
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// base + disp
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s+%Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszBase, pstState->insCurIns.iDisp);
+						else	// base+scaled-index+disp
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s+%s+%Xh]", pstState->insCurIns.pwszPtrStr,
+									pstState->insCurIns.wszBase, pstState->insCurIns.wszScaleIndex, pstState->insCurIns.iDisp);
+					}
+				}
+				else
+				{
+					if( pstState->insCurIns.wszBase[0] == 0 )
+					{
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// todo: no scale, no index, no base!! error??
+						{
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"fStateDump(): SIB no base, no SI, no disp!!\n");
+							return FALSE;
+						}
+						else	// scaled-index
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszScaleIndex);
+					}
+					else
+					{
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// todo: only base??
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszBase);
+						else	// base + scaled-index
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s+%s]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszBase, pstState->insCurIns.wszScaleIndex);
+					}
+				}// if fDisp
+
+				break;
+			}// case SIB/SIB32
+
+			case OPRTYPE_DISP32:	// ds:[disp32]	ds:[0040BD08h]
+			{
+				if(pstState->insCurIns.wPrefixTypes & PREFIX_SEG)
+				{
+					// We have a segment override prefix. Get it.
+					DUMP_vGetSegPrefix(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
+
+					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s%s:[%08Xh]", pstState->insCurIns.pwszPtrStr, pwszSegStr, pstState->insCurIns.iDisp);
+				}
+				else
+				{
+					// Default to "ds:" if there is no segment override prefix
+					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s%s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_DS], pstState->insCurIns.iDisp);
+				}
+
+				//switch(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG])
+				//{
+				//	case OPC_PREFIX_SEGOVR_ES:
+				//		nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_ES], pstState->insCurIns.iDisp);
+				//		break;
+
+				//	case OPC_PREFIX_SEGOVR_CS:
+				//		nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_CS], pstState->insCurIns.iDisp);
+				//		break;
+
+				//	case OPC_PREFIX_SEGOVR_SS:
+				//		nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_SS], pstState->insCurIns.iDisp);
+				//		break;
+
+				//	case OPC_PREFIX_SEGOVR_DS:
+				//		nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_DS], pstState->insCurIns.iDisp);
+				//		break;
+
+				//	case OPC_PREFIX_SEGOVR_FS:
+				//		nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_FS], pstState->insCurIns.iDisp);
+				//		break;
+
+				//	case OPC_PREFIX_SEGOVR_GS:
+				//		nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_GS], pstState->insCurIns.iDisp);
+				//		break;
+
+				//	default:	// redundant but makes it easy to understand
+				//		nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_DS], pstState->insCurIns.iDisp);
+				//		break;
+				//}
+			}// case OPRTYPE_DISP32
+
+			default:
+				break;
+
+		}// switch(OprTypeDes)
+
+		// ',' between dest and src operands only if both are present
+		if(pstState->insCurIns.fDesStrSet && pstState->insCurIns.fSrcStrSet)
+			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L",");
+
+		// Now the source operand
+		switch(pstState->insCurIns.OprTypeSrc)
+		{
+			case OPRTYPE_ERROR:
+				// Instructions that do not have a ModRM/SIB byte would not
+				// set the OprTypeDes and it will be OPRTYPE_ERROR(=0).
+				break;
+
+			case OPRTYPE_REG:	// eax, ax, al, ...
+				nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s", pstState->insCurIns.wszCurInsStrSrc);
+				break;
+
+			case OPRTYPE_MEM:	// dword ptr [eax], word ptr [ebx], ...
+			{
+				DUMP_vGetSegPrefix(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
+				nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s%s[%s]", pstState->insCurIns.pwszPtrStr, pwszSegStr,
+							pstState->insCurIns.wszCurInsStrSrc);
+				break;
+			}
+
+			case OPRTYPE_MEM8:	// dword ptr [eax-4h], word ptr [ebx+10h], ...
+			{
+				DUMP_vGetSegPrefix(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
+				if(pstState->insCurIns.iDisp >= 0)	// must include a '+'
+					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s%s[%s+%Xh]", pstState->insCurIns.pwszPtrStr, pwszSegStr, 
+								pstState->insCurIns.wszCurInsStrSrc, pstState->insCurIns.iDisp);
+				else
+				{
+					// Get the positive representation of the negative displacement and put a 
+					// '-' sign preceding it while printing. This makes it easier to spot
+					// positive and negative displacements (especially from ebp: diff b/w
+					// locals and arguments).
+					BYTE chDisp = (BYTE)pstState->insCurIns.iDisp;
+					Util_vTwosComplementByte(chDisp, &chDisp);		// same variable as two parameters I know!
+					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s%s[%s-%Xh]", pstState->insCurIns.pwszPtrStr, pwszSegStr, 
+								pstState->insCurIns.wszCurInsStrSrc, chDisp);
+				}
+				break;
+			}// case MEM8
+
+			case OPRTYPE_MEM32:
+			{
+				DUMP_vGetSegPrefix(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
+
+				// dumpbin appears to be doing it(2's compl thing) only for disp8, not disp32
+				nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s%s[%s+%Xh]", pstState->insCurIns.pwszPtrStr, pwszSegStr, 
+							pstState->insCurIns.wszCurInsStrSrc, pstState->insCurIns.iDisp);
+				break;
+			}// case MEM32
+
+			case OPRTYPE_SIB:
+			case OPRTYPE_SIB8:
+			case OPRTYPE_SIB32:
+			{
+				if(pstState->insCurIns.fDisp)
+				{
+					if( pstState->insCurIns.wszBase[0] == 0 )
+					{
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// only a disp
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.iDisp);
+						else	// scaled-index+disp
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s+%Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszScaleIndex, pstState->insCurIns.iDisp);
+					}
+					else
+					{
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// base + disp
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s+%Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszBase, pstState->insCurIns.iDisp);
+						else	// base+scaled-index+disp
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s+%s+%Xh]", pstState->insCurIns.pwszPtrStr,
+									pstState->insCurIns.wszBase, pstState->insCurIns.wszScaleIndex, pstState->insCurIns.iDisp);
+					}
+				}
+				else
+				{
+					if( pstState->insCurIns.wszBase[0] == 0 )
+					{
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// todo: no scale, no index, no base!! error??
+						{
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"fStateDump(): SIB no base, no SI, no disp!!\n");
+							return FALSE;
+						}
+						else	// scaled-index
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszScaleIndex);
+					}
+					else
+					{
+						if(pstState->insCurIns.wszScaleIndex[0] == 0)	// todo: only base??
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszBase);
+						else	// base + scaled-index
+							nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s[%s+%s]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.wszBase, pstState->insCurIns.wszScaleIndex);
+					}
+				}// if fDisp
+
+				break;
+			}// case SIB8/32
+
+			case OPRTYPE_DISP32:	// ds:[disp32]	ds:[0040BD08h]
+			{
+				WCHAR *pwszSegStr = NULL;
+
+				if(pstState->insCurIns.wPrefixTypes & PREFIX_SEG)
+				{
+					// We have a segment override prefix. Get it.
+					DUMP_vGetSegPrefix(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
+
+					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s%s:[%08Xh]", pstState->insCurIns.pwszPtrStr, pwszSegStr, pstState->insCurIns.iDisp);
+				}
+				else
+				{
+					// Default to "ds:" if there is no segment override prefix
+					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s%s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_DS], pstState->insCurIns.iDisp);
+				}
+				
+
+			//	switch(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG])
+			//	{
+			//		case OPC_PREFIX_SEGOVR_ES:
+			//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_ES], pstState->insCurIns.iDisp);
+			//			break;
+
+			//		case OPC_PREFIX_SEGOVR_CS:
+			//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_CS], pstState->insCurIns.iDisp);
+			//			break;
+
+			//		case OPC_PREFIX_SEGOVR_SS:
+			//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_SS], pstState->insCurIns.iDisp);
+			//			break;
+
+			//		case OPC_PREFIX_SEGOVR_DS:
+			//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_DS], pstState->insCurIns.iDisp);
+			//			break;
+
+			//		case OPC_PREFIX_SEGOVR_FS:
+			//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_FS], pstState->insCurIns.iDisp);
+			//			break;
+
+			//		case OPC_PREFIX_SEGOVR_GS:
+			//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_GS], pstState->insCurIns.iDisp);
+			//			break;
+
+			//		default:	// redundant but makes it easy to understand
+			//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, awszSRegCodes[SREGCODE_DS], pstState->insCurIns.iDisp);
+			//			break;
+			//	}
+			}// case OPRTYPE_DISP32
+
+			default:
+				break;
+
+		}// switch(OprTypeDes)
+
+	}
+	else
+	{
+		// There was no ModRM byte to specify the operand(s).
+		// Options:
+		// - Operand(s) are determined in OPCODE state
+		// - Data offset is present (src/des)
+		// - Imm value is src
+		// - Code offset is src
+
+		if(pstState->insCurIns.fDesStrSet)
+			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s", pstState->insCurIns.wszCurInsStrDes);
+		else if(pstState->insCurIns.fDataOffset && pstState->insCurIns.fSrcStrSet)
+		{
+			// des not determined earlier but src has been determined
+			// and there is a data offset. So the data offset must be
+			// the des operand
+			DUMP_vDumpDataOffset_ToString(pstState, &nTotalCharsWritten);
+			pstState->insCurIns.fDesStrSet = TRUE;	// we have a des operand: print ',' later
+		}
+
+		if(pstState->insCurIns.fSrcStrSet)
+		{
+			// ',' between dest and src operands only if both are present
+			if(pstState->insCurIns.fDesStrSet)
+				nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L",");
+			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s", pstState->insCurIns.wszCurInsStrSrc);
+		}
+		else if(pstState->insCurIns.fDataOffset)
+		{
+			// data offset must be the src operand
+			if(pstState->insCurIns.fDesStrSet)
+				nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L",");
+			DUMP_vDumpDataOffset_ToString(pstState, &nTotalCharsWritten);
+			pstState->insCurIns.fSrcStrSet = TRUE;	// we have a src operand: print ',' later
+		}
+
+	}// if fModRM
+
+	// Now the third operand
+	if(pstState->insCurIns.fOpr3StrSet)
+		nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L",%s", pstState->insCurIns.wszCurInsStrOpr3);
+
+	// 6: Immediate value: imm or code or data offset
+	if(pstState->insCurIns.fImm)
+	{									//  ud   8bit       16bit     32bit     48bit
+ 		static WCHAR awszFormatSpec[][6] = {L"", L"%02Xh", L"%04Xh", L"%08Xh", L"%Xh"};
+		
+		// todo: ASSERT in Release mode too??
+		ASSERT(pstState->insCurIns.bImmType >= IMM_UNDEF && pstState->insCurIns.bImmType <= IMM_48BIT);	// Array bounds checking
+
+		// Preceding comma(',') if there was a prior operand
+		if(pstState->insCurIns.fDesStrSet || pstState->insCurIns.fSrcStrSet)	// checking src also because /digit type
+			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L",");								// sets oprstr in src
+
+		nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, awszFormatSpec[pstState->insCurIns.bImmType], pstState->insCurIns.iImm);
+	}
+	else if(pstState->insCurIns.fCodeOffset)
+	{
+		// Preceding comma(',') if there was a prior operand
+		if(pstState->insCurIns.fDesStrSet || pstState->insCurIns.fSrcStrSet)	// checking src also because /digit type
+			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L",");								// sets oprstr in src
+
+		LONG lTemp = pstState->lDelta + (LONG)pstState->pbCurrentCodePtr;
+
+		// 32bit address always; so %08X
+		nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%08X", pstState->insCurIns.iImm + lTemp);
+	}
+	//else if(pstState->insCurIns.fDataOffset)
+	//{
+	//	if(pstState->insCurIns.fSrcStrSet || pstState->insCurIns.fDesStrSet)	// checking both because A3 C4 ... MOV eax,
+	//		nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L",");
+
+	//	/*
+	//	 * By default, the offset is in the ds segment but this maybe
+	//	 * changed using any one of the segment override prefixes.
+	//	 * Sample string:
+	//	 *		dword ptr ds:[0040B000h]
+	//	 *		word ptr ss:[0040B000h]
+	//	 */
+	//	 if( ! (pstState->insCurIns.wPrefixTypes & PREFIX_SEG) )	// ! higher precedence than &
+	//	 {
+	//		// No segment override prefix present, default to ds
+	//		if(pstState->insCurIns.bImmType == IMM_16BIT)
+	//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s ds:[%04Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.iImm);
+	//		else
+	//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s ds:[%08Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.iImm);
+	//	 }
+	//	 else
+	//	 {
+	//		// There is a segment override prefix. Print the correct one
+	//		// by reading the stored prefix type in abPrefixes.
+	//		switch(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG])
+	//		{
+	//			case OPC_PREFIX_SEGOVR_ES:
+	//				if(pstState->insCurIns.bImmType == IMM_16BIT)
+	//					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_ES], pstState->insCurIns.iImm);
+	//				else
+	//					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_ES], pstState->insCurIns.iImm);
+	//				break;
+
+	//			case OPC_PREFIX_SEGOVR_CS:
+	//				if(pstState->insCurIns.bImmType == IMM_16BIT)
+	//					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_CS], pstState->insCurIns.iImm);
+	//				else
+	//					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_CS], pstState->insCurIns.iImm);
+	//				break;
+
+	//			case OPC_PREFIX_SEGOVR_SS:
+	//				if(pstState->insCurIns.bImmType == IMM_16BIT)
+	//					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_SS], pstState->insCurIns.iImm);
+	//				else
+	//					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_SS], pstState->insCurIns.iImm);
+	//				break;
+
+	//			case OPC_PREFIX_SEGOVR_DS:
+	//				if(pstState->insCurIns.bImmType == IMM_16BIT)
+	//					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_DS], pstState->insCurIns.iImm);
+	//				else
+	//					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_DS], pstState->insCurIns.iImm);
+	//				break;
+	//			
+	//			case OPC_PREFIX_SEGOVR_FS:
+	//				if(pstState->insCurIns.bImmType == IMM_16BIT)
+	//					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_FS], pstState->insCurIns.iImm);
+	//				else
+	//					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_FS], pstState->insCurIns.iImm);
+	//				break;
+	//			
+	//			case OPC_PREFIX_SEGOVR_GS:
+	//				if(pstState->insCurIns.bImmType == IMM_16BIT)
+	//					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_GS], pstState->insCurIns.iImm);
+	//				else
+	//					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_GS], pstState->insCurIns.iImm);
+	//				break;
+
+	//			default:	// Not a critical error
+	//				nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"fStateDump(): Invalid segovr prefix %xh\n", pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG]);
+	//				if(pstState->insCurIns.bImmType == IMM_16BIT)
+	//					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s <>:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_ES], pstState->insCurIns.iImm);
+	//				else
+	//					nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s <>:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+	//								awszSRegCodes[SREGCODE_ES], pstState->insCurIns.iImm);
+	//				break;
+	//		}// switch(abPrefixes)
+	//	 
+	//	 }// if PREFIX_SEG
+	//}// if fDataOffset
+
+	// 7: Go to next line
+	nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"\n");
+
+	// 8: Check if there are more bytes of the current instruction
+	// to print.
+	if(pstState->nBytesCurIns > 6)
+	{
+		// In the earlier print loop, nBytesPrinted is incremented after 
+		// printing and before checking termination condition, so 
+		// its value maybe greater than how many bytes were actually printed
+		nBytesPrinted = 6;
+
+		// Padding for address field
+		nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"            ");	// 12 spaces
+
+		// Start from where we left off earlier
+		register int nNewPrinted = 0;
+		for(PBYTE pBytes = pstState->pbCurrentCodePtr - pstState->nBytesCurIns + nBytesPrinted;
+		pBytes < pstState->pbCurrentCodePtr && nNewPrinted < pstState->nBytesCurIns;
+		++pBytes, ++nNewPrinted)
+		{
+			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%02X ", *pBytes);
+		}
+		nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"\n");
+	}
+
+	pstState->dsNextState = DASM_STATE_RESET;
+	return TRUE;
+
+}
+
+void DUMP_vDumpDataOffset(PDASMSTATE pstState)
+{
+	//if(pstState->insCurIns.fDesStrSet)
 	//	wprintf_s(L",");
 
 	/*
@@ -3069,13 +3917,13 @@ void DUMP_vDumpDataOffset()
 	 *		dword ptr ds:[0040B000h]
 	 *		word ptr ss:[0040B000h]
 	 */
-	if( ! (insCurIns.wPrefixTypes & PREFIX_SEG) )	// ! higher precedence than &
+	if( ! (pstState->insCurIns.wPrefixTypes & PREFIX_SEG) )	// ! higher precedence than &
 	{
 	// No segment override prefix present, default to ds
-	if(insCurIns.bImmType == IMM_16BIT)
-		wprintf_s(L"%sds:[%04Xh]", insCurIns.pwszPtrStr, insCurIns.iImm);
+	if(pstState->insCurIns.bImmType == IMM_16BIT)
+		wprintf_s(L"%sds:[%04Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.iImm);
 	else
-		wprintf_s(L"%sds:[%08Xh]", insCurIns.pwszPtrStr, insCurIns.iImm);
+		wprintf_s(L"%sds:[%08Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.iImm);
 	}
 	else
 	{
@@ -3084,82 +3932,198 @@ void DUMP_vDumpDataOffset()
 
 		WCHAR *pwszSegStr = NULL;
 
-		DUMP_vGetSegPrefix(insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
-		if(insCurIns.bImmType == IMM_16BIT)
-			wprintf_s(L"%s%s:[%04Xh]", insCurIns.pwszPtrStr, 
-						pwszSegStr, insCurIns.iImm);
+		DUMP_vGetSegPrefix(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
+		if(pstState->insCurIns.bImmType == IMM_16BIT)
+			wprintf_s(L"%s%s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+						pwszSegStr, pstState->insCurIns.iImm);
 		else
-			wprintf_s(L"%s%s:[%08Xh]", insCurIns.pwszPtrStr, 
-						pwszSegStr, insCurIns.iImm);
+			wprintf_s(L"%s%s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+						pwszSegStr, pstState->insCurIns.iImm);
 		
-		//switch(insCurIns.abPrefixes[PREFIX_INDEX_SEG])
+		//switch(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG])
 		//{
 		//	case OPC_PREFIX_SEGOVR_ES:
-		//		if(insCurIns.bImmType == IMM_16BIT)
-		//			wprintf_s(L"%s %s:[%04Xh]", insCurIns.pwszPtrStr, 
-		//						awszSRegCodes[SREGCODE_ES], insCurIns.iImm);
+		//		if(pstState->insCurIns.bImmType == IMM_16BIT)
+		//			wprintf_s(L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_ES], pstState->insCurIns.iImm);
 		//		else
-		//			wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, 
-		//						awszSRegCodes[SREGCODE_ES], insCurIns.iImm);
+		//			wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_ES], pstState->insCurIns.iImm);
 		//		break;
 
 		//	case OPC_PREFIX_SEGOVR_CS:
-		//		if(insCurIns.bImmType == IMM_16BIT)
-		//			wprintf_s(L"%s %s:[%04Xh]", insCurIns.pwszPtrStr, 
-		//						awszSRegCodes[SREGCODE_CS], insCurIns.iImm);
+		//		if(pstState->insCurIns.bImmType == IMM_16BIT)
+		//			wprintf_s(L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_CS], pstState->insCurIns.iImm);
 		//		else
-		//			wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, 
-		//						awszSRegCodes[SREGCODE_CS], insCurIns.iImm);
+		//			wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_CS], pstState->insCurIns.iImm);
 		//		break;
 
 		//	case OPC_PREFIX_SEGOVR_SS:
-		//		if(insCurIns.bImmType == IMM_16BIT)
-		//			wprintf_s(L"%s %s:[%04Xh]", insCurIns.pwszPtrStr, 
-		//						awszSRegCodes[SREGCODE_SS], insCurIns.iImm);
+		//		if(pstState->insCurIns.bImmType == IMM_16BIT)
+		//			wprintf_s(L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_SS], pstState->insCurIns.iImm);
 		//		else
-		//			wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, 
-		//						awszSRegCodes[SREGCODE_SS], insCurIns.iImm);
+		//			wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_SS], pstState->insCurIns.iImm);
 		//		break;
 
 		//	case OPC_PREFIX_SEGOVR_DS:
-		//		if(insCurIns.bImmType == IMM_16BIT)
-		//			wprintf_s(L"%s %s:[%04Xh]", insCurIns.pwszPtrStr, 
-		//						awszSRegCodes[SREGCODE_DS], insCurIns.iImm);
+		//		if(pstState->insCurIns.bImmType == IMM_16BIT)
+		//			wprintf_s(L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_DS], pstState->insCurIns.iImm);
 		//		else
-		//			wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, 
-		//						awszSRegCodes[SREGCODE_DS], insCurIns.iImm);
+		//			wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_DS], pstState->insCurIns.iImm);
 		//		break;
 		//		
 		//	case OPC_PREFIX_SEGOVR_FS:
-		//		if(insCurIns.bImmType == IMM_16BIT)
-		//			wprintf_s(L"%s %s:[%04Xh]", insCurIns.pwszPtrStr, 
-		//						awszSRegCodes[SREGCODE_FS], insCurIns.iImm);
+		//		if(pstState->insCurIns.bImmType == IMM_16BIT)
+		//			wprintf_s(L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_FS], pstState->insCurIns.iImm);
 		//		else
-		//			wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, 
-		//						awszSRegCodes[SREGCODE_FS], insCurIns.iImm);
+		//			wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_FS], pstState->insCurIns.iImm);
 		//		break;
 		//		
 		//	case OPC_PREFIX_SEGOVR_GS:
-		//		if(insCurIns.bImmType == IMM_16BIT)
-		//			wprintf_s(L"%s %s:[%04Xh]", insCurIns.pwszPtrStr, 
-		//						awszSRegCodes[SREGCODE_GS], insCurIns.iImm);
+		//		if(pstState->insCurIns.bImmType == IMM_16BIT)
+		//			wprintf_s(L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_GS], pstState->insCurIns.iImm);
 		//		else
-		//			wprintf_s(L"%s %s:[%08Xh]", insCurIns.pwszPtrStr, 
-		//						awszSRegCodes[SREGCODE_GS], insCurIns.iImm);
+		//			wprintf_s(L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_GS], pstState->insCurIns.iImm);
 		//		break;
 
 		//	default:	// Not a critical error
-		//		wprintf_s(L"fStateDump(): Invalid segovr prefix %xh\n", insCurIns.abPrefixes[PREFIX_INDEX_SEG]);
-		//		if(insCurIns.bImmType == IMM_16BIT)
-		//			wprintf_s(L"%s <>:[%04Xh]", insCurIns.pwszPtrStr, 
-		//						awszSRegCodes[SREGCODE_ES], insCurIns.iImm);
+		//		wprintf_s(L"fStateDump(): Invalid segovr prefix %xh\n", pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG]);
+		//		if(pstState->insCurIns.bImmType == IMM_16BIT)
+		//			wprintf_s(L"%s <>:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_ES], pstState->insCurIns.iImm);
 		//		else
-		//			wprintf_s(L"%s <>:[%08Xh]", insCurIns.pwszPtrStr, 
-		//						awszSRegCodes[SREGCODE_ES], insCurIns.iImm);
+		//			wprintf_s(L"%s <>:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_ES], pstState->insCurIns.iImm);
 		//		break;
 		//}// switch(abPrefixes)
 		 
 	}// if PREFIX_SEG
+	return;
+}
+
+void DUMP_vDumpDataOffset_ToString(PDASMSTATE pstState, PDWORD pnTotalCharsWritten)
+{
+    ASSERT(pnTotalCharsWritten && *pnTotalCharsWritten > 0);
+
+    PWCHAR pszStrStart;
+    DWORD nTotalCharsCapacity;
+    DWORD nTotalCharsWritten = *pnTotalCharsWritten;
+
+    // Init
+    pszStrStart = pstState->szDisassembledInst;
+    nTotalCharsCapacity = _countof(pstState->szDisassembledInst);
+
+	/*
+	 * By default, the offset is in the ds segment but this maybe
+	 * changed using any one of the segment override prefixes.
+	 * Sample string:
+	 *		dword ptr ds:[0040B000h]
+	 *		word ptr ss:[0040B000h]
+	 */
+	if( ! (pstState->insCurIns.wPrefixTypes & PREFIX_SEG) )	// ! higher precedence than &
+	{
+	    // No segment override prefix present, default to ds
+	    if(pstState->insCurIns.bImmType == IMM_16BIT)
+		    nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%sds:[%04Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.iImm);
+	    else
+		    nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%sds:[%08Xh]", pstState->insCurIns.pwszPtrStr, pstState->insCurIns.iImm);
+	}
+	else
+	{
+		// There is a segment override prefix. Print the correct one
+		// by reading the stored prefix type in abPrefixes.
+
+		WCHAR *pwszSegStr = NULL;
+
+		DUMP_vGetSegPrefix(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG], &pwszSegStr);
+		if(pstState->insCurIns.bImmType == IMM_16BIT)
+			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s%s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+						pwszSegStr, pstState->insCurIns.iImm);
+		else
+			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s%s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+						pwszSegStr, pstState->insCurIns.iImm);
+		
+		//switch(pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG])
+		//{
+		//	case OPC_PREFIX_SEGOVR_ES:
+		//		if(pstState->insCurIns.bImmType == IMM_16BIT)
+		//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_ES], pstState->insCurIns.iImm);
+		//		else
+		//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_ES], pstState->insCurIns.iImm);
+		//		break;
+
+		//	case OPC_PREFIX_SEGOVR_CS:
+		//		if(pstState->insCurIns.bImmType == IMM_16BIT)
+		//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_CS], pstState->insCurIns.iImm);
+		//		else
+		//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_CS], pstState->insCurIns.iImm);
+		//		break;
+
+		//	case OPC_PREFIX_SEGOVR_SS:
+		//		if(pstState->insCurIns.bImmType == IMM_16BIT)
+		//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_SS], pstState->insCurIns.iImm);
+		//		else
+		//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_SS], pstState->insCurIns.iImm);
+		//		break;
+
+		//	case OPC_PREFIX_SEGOVR_DS:
+		//		if(pstState->insCurIns.bImmType == IMM_16BIT)
+		//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_DS], pstState->insCurIns.iImm);
+		//		else
+		//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_DS], pstState->insCurIns.iImm);
+		//		break;
+		//		
+		//	case OPC_PREFIX_SEGOVR_FS:
+		//		if(pstState->insCurIns.bImmType == IMM_16BIT)
+		//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_FS], pstState->insCurIns.iImm);
+		//		else
+		//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_FS], pstState->insCurIns.iImm);
+		//		break;
+		//		
+		//	case OPC_PREFIX_SEGOVR_GS:
+		//		if(pstState->insCurIns.bImmType == IMM_16BIT)
+		//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_GS], pstState->insCurIns.iImm);
+		//		else
+		//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s %s:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_GS], pstState->insCurIns.iImm);
+		//		break;
+
+		//	default:	// Not a critical error
+		//		nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"fStateDump(): Invalid segovr prefix %xh\n", pstState->insCurIns.abPrefixes[PREFIX_INDEX_SEG]);
+		//		if(pstState->insCurIns.bImmType == IMM_16BIT)
+		//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s <>:[%04Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_ES], pstState->insCurIns.iImm);
+		//		else
+		//			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%s <>:[%08Xh]", pstState->insCurIns.pwszPtrStr, 
+		//						awszSRegCodes[SREGCODE_ES], pstState->insCurIns.iImm);
+		//		break;
+		//}// switch(abPrefixes)
+		 
+	}// if PREFIX_SEG
+
+    *pnTotalCharsWritten = nTotalCharsWritten;
+
 	return;
 }
 
@@ -3206,13 +4170,13 @@ void DUMP_vGetSegPrefix(BYTE bSegPrefixVal, __out WCHAR **ppwszPrefixStr)
  * 0F A0	PUSH FS		Push FS	// 2byte opcode
  * 0F A8	PUSH GS		Push GS	// 2byte opcode
  */
-BOOL OPCHndlrStack_PUSH(BYTE bOpcode)
+BOOL OPCHndlrStack_PUSH(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	// pByteInCode is now pointing to the byte following the opcode
+	// pstState->pbCurrentCodePtr is now pointing to the byte following the opcode
 
 	if( ! (bOpcode >= 0x50 && bOpcode <= 0x57) )
 	{
@@ -3220,18 +4184,18 @@ BOOL OPCHndlrStack_PUSH(BYTE bOpcode)
 		{
 			case 0xff:	// opsize attrib can be used and w-bit=1 always
 			{
-				insCurIns.fModRM = TRUE;
-				insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-				dsNextState = DASM_STATE_MOD_RM;
+				pstState->insCurIns.fModRM = TRUE;
+				pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+				pstState->dsNextState = DASM_STATE_MOD_RM;
 				break;
 			}
 
 			case 0x6a:	// PUSH imm8
 			{
 				// size of immediate value is 8bits
-				insCurIns.fImm = TRUE;
-				insCurIns.bImmType = IMM_8BIT;
-				dsNextState = DASM_STATE_IMM;
+				pstState->insCurIns.fImm = TRUE;
+				pstState->insCurIns.bImmType = IMM_8BIT;
+				pstState->dsNextState = DASM_STATE_IMM;
 				break;
 			}
 
@@ -3239,61 +4203,61 @@ BOOL OPCHndlrStack_PUSH(BYTE bOpcode)
 			{
 				// Size of immediate value is 16/32bits depending on the
 				// presence of the operand size override prefix
-				insCurIns.fImm = TRUE;
-				if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-					insCurIns.bImmType = IMM_16BIT;
+				pstState->insCurIns.fImm = TRUE;
+				if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+					pstState->insCurIns.bImmType = IMM_16BIT;
 				else
-					insCurIns.bImmType = IMM_32BIT;
+					pstState->insCurIns.bImmType = IMM_32BIT;
 
-				dsNextState = DASM_STATE_IMM;
+				pstState->dsNextState = DASM_STATE_IMM;
 				break;
 			}
 
 			case 0x0e:	// PUSH CS
 			{	
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), L"cs");
-				insCurIns.fSrcStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), L"cs");
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 				break;
 			}
 
 			case 0x16:	// PUSH SS
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), L"ss");
-				insCurIns.fSrcStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), L"ss");
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 				break;
 			}
 
 			case 0x1e:	// PUSH DS
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), L"ds");
-				insCurIns.fSrcStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), L"ds");
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 				break;
 			}
 
 			case 0x06:	// PUSH ES
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), L"es");
-				insCurIns.fSrcStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), L"es");
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 				break;
 			}
 
 			case 0xa0:	// 2byte opcode. 0fh has already been read. PUSH FS
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), L"fs");
-				insCurIns.fSrcStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), L"fs");
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 				break;
 			}
 
 			case 0xa8:	// 2byte opcode. 0fh has already been read. PUSH GS
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), L"gs");
-				insCurIns.fSrcStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), L"gs");
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 				break;
 			}
 
@@ -3315,21 +4279,21 @@ BOOL OPCHndlrStack_PUSH(BYTE bOpcode)
 		// Get the register name
 		WORD wReg = bOpcode - 0x50;
 		
-		if( insCurIns.wPrefixTypes & PREFIX_OPSIZE )
+		if( pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE )
 			// 16bit reg
-			StringCchCopy(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), 
+			StringCchCopy(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), 
 								awszRegCodes16[wReg]);
 		else
 			// 32bit reg
-			StringCchCopy(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), 
+			StringCchCopy(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), 
 								awszRegCodes32[wReg]);
 
-		insCurIns.fSrcStrSet = TRUE;
+		pstState->insCurIns.fSrcStrSet = TRUE;
 
 		// Next state is DUMP because there are no more 
 		// bytes to process for the current instruction.
 		
-		dsNextState = DASM_STATE_DUMP;
+		pstState->dsNextState = DASM_STATE_DUMP;
 	
 	}// if-else
 
@@ -3348,7 +4312,7 @@ BOOL OPCHndlrStack_PUSH(BYTE bOpcode)
  * 0F A1	POP FS	// 2byte opcodes
  * 0F A9	POP GS
  */
-BOOL OPCHndlrStack_POP(BYTE bOpcode)
+BOOL OPCHndlrStack_POP(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -3362,49 +4326,49 @@ BOOL OPCHndlrStack_POP(BYTE bOpcode)
 			case 0x8f: // POP m32 / POP m16	// opsize attrib can be used, w=1 always
 			{
 				// there is a ModRM byte
-				insCurIns.fModRM = TRUE;
-				dsNextState = DASM_STATE_MOD_RM;
-				insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+				pstState->insCurIns.fModRM = TRUE;
+				pstState->dsNextState = DASM_STATE_MOD_RM;
+				pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
 				break;
 			}
 
  			case 0x1f: // POP DS
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), L"ds");
-				insCurIns.fSrcStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), L"ds");
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 				break;
 			}
 
  			case 0x07: // POP ES
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), L"es");
-				insCurIns.fSrcStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), L"es");
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 				break;
 			}
 
  			case 0x17: // POP SS
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), L"ss");
-				insCurIns.fSrcStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), L"ss");
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 				break;
 			}
 
  			case 0xa1: // 2byte opcodes: 0fh has already been read. POP FS
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), L"fs");
-				insCurIns.fSrcStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), L"fs");
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 				break;
 			}
 
 			case 0xa9: // 2byte opcodes: 0fh has already been read. POP GS
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), L"gs");
-				insCurIns.fSrcStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), L"gs");
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 				break;
 			}
 
@@ -3423,16 +4387,16 @@ BOOL OPCHndlrStack_POP(BYTE bOpcode)
 		// Get the register name index
 		WORD wReg = bOpcode - 0x58;
 		
-		if( insCurIns.wPrefixTypes & PREFIX_OPSIZE )
-			StringCchCopy(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), awszRegCodes16[wReg]);
+		if( pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE )
+			StringCchCopy(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), awszRegCodes16[wReg]);
 		else
-			StringCchCopy(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), awszRegCodes32[wReg]);
+			StringCchCopy(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), awszRegCodes32[wReg]);
 
-		insCurIns.fSrcStrSet = TRUE;
+		pstState->insCurIns.fSrcStrSet = TRUE;
 
 		// Next state is DUMP because there are no more
 		// bytes to process for the current instruction.
-		dsNextState = DASM_STATE_DUMP;
+		pstState->dsNextState = DASM_STATE_DUMP;
 
 	}// if ! bOpcode >= 0x58 && bOpcode <= 0x5f
 
@@ -3444,7 +4408,7 @@ BOOL OPCHndlrStack_POP(BYTE bOpcode)
  * 60		PUSHA/PUSHAD
  * 9c		PUSHF/PUSHFD
  */
-BOOL OPCHndlrStack_PUSHxx(BYTE bOpcode)
+BOOL OPCHndlrStack_PUSHxx(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -3456,20 +4420,20 @@ BOOL OPCHndlrStack_PUSHxx(BYTE bOpcode)
 	// in fStateOpcode()
 	if(bOpcode == 0x60)
 	{
-		if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"pusha");
+		if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"pusha");
 	}
 	else if(bOpcode == 0x9c)
 	{
-		if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"pushf");
+		if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"pushf");
 	}
 	else
 	{
 		wprintf_s(L"OPCHndlrStack_PUSHxx(): Invalid opcode %xh\n", bOpcode);
 		return FALSE;
 	}
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -3477,7 +4441,7 @@ BOOL OPCHndlrStack_PUSHxx(BYTE bOpcode)
  * 61	POPA/POPAD
  * 9D	POPF/POPFD
  */
-BOOL OPCHndlrStack_POPxx(BYTE bOpcode)
+BOOL OPCHndlrStack_POPxx(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -3489,13 +4453,13 @@ BOOL OPCHndlrStack_POPxx(BYTE bOpcode)
 	// in fStateOpcode()
 	if(bOpcode == 0x61)
 	{
-		if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"popa");
+		if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"popa");
 	}
 	else if(bOpcode == 0x9d)
 	{
-		if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"popf");
+		if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"popf");
 	}
 	else
 	{
@@ -3503,7 +4467,7 @@ BOOL OPCHndlrStack_POPxx(BYTE bOpcode)
 		return FALSE;
 	}
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -3513,7 +4477,7 @@ BOOL OPCHndlrStack_POPxx(BYTE bOpcode)
  * C8 iw 01		ENTER imm16,1
  * C8 iw ib		ENTER imm16,imm8
  */
-BOOL OPCHndlrStack_ENTER(BYTE bOpcode)
+BOOL OPCHndlrStack_ENTER(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -3522,27 +4486,27 @@ BOOL OPCHndlrStack_ENTER(BYTE bOpcode)
 	// Because there are two immediate values in this instruction
 	// we will handle it here itself and not in IMM state
 
-	// pByteInCode is pointing to the byte following opcode,
+	// pstState->pbCurrentCodePtr is pointing to the byte following opcode,
 	// that is the first imm16 value
 
 	WORD wImm16;
 	BYTE bImmSecond;
 
-	wImm16 = *((WORD*)pByteInCode);
-	pByteInCode += 2;
+	wImm16 = *((WORD*)pstState->pbCurrentCodePtr);
+	pstState->pbCurrentCodePtr += 2;
 
-	bImmSecond = *pByteInCode;
-	++pByteInCode;
+	bImmSecond = *pstState->pbCurrentCodePtr;
+	++(pstState->pbCurrentCodePtr);
 
-	nBytesCurIns += sizeof(WORD) + sizeof(BYTE);	// imm16 and 0/1/imm8
+	pstState->nBytesCurIns += sizeof(WORD) + sizeof(BYTE);	// imm16 and 0/1/imm8
 
 	// imm16 into des str and imm8 into src str
-	StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes), L"%04Xh", wImm16);
-	StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), L"%02Xh", bImmSecond);
-	insCurIns.fSrcStrSet = TRUE;
-	insCurIns.fDesStrSet = TRUE;
+	StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes), L"%04Xh", wImm16);
+	StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), L"%02Xh", bImmSecond);
+	pstState->insCurIns.fSrcStrSet = TRUE;
+	pstState->insCurIns.fDesStrSet = TRUE;
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -3550,13 +4514,13 @@ BOOL OPCHndlrStack_ENTER(BYTE bOpcode)
  * C9 LEAVE
  * C9 LEAVE
  */
-BOOL OPCHndlrStack_LEAVE(BYTE bOpcode)
+BOOL OPCHndlrStack_LEAVE(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -3595,7 +4559,7 @@ BOOL OPCHndlrStack_LEAVE(BYTE bOpcode)
  * 13 /r		ADC r16,r/m16
  * 13 /r		ADC r32,r/m32
  */
-BOOL OPCHndlrALU_ADD(BYTE bOpcode)
+BOOL OPCHndlrALU_ADD(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -3618,59 +4582,59 @@ BOOL OPCHndlrALU_ADD(BYTE bOpcode)
 		case 0x11:
 		case 0x12:
 		case 0x13:
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_R;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		case 0x04:
 		case 0x14:
-			insCurIns.fImm = TRUE;
-			insCurIns.bImmType = IMM_8BIT;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.bImmType = IMM_8BIT;
 
 			// Construct the output string
-			StringCchCopy(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes), awszRegCodes8[REGCODE_AL]);
-			insCurIns.fDesStrSet = TRUE;
+			StringCchCopy(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes), awszRegCodes8[REGCODE_AL]);
+			pstState->insCurIns.fDesStrSet = TRUE;
 
-			dsNextState = DASM_STATE_IMM;
+			pstState->dsNextState = DASM_STATE_IMM;
 			break;
 
 		case 0x05:
 		case 0x15:
-			if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 			{
-				insCurIns.bImmType = IMM_16BIT;
+				pstState->insCurIns.bImmType = IMM_16BIT;
 				// Construct the output string
-				StringCchCopy(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes), awszRegCodes16[REGCODE_AX]);
-				insCurIns.fDesStrSet = TRUE;
+				StringCchCopy(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes), awszRegCodes16[REGCODE_AX]);
+				pstState->insCurIns.fDesStrSet = TRUE;
 			}
 			else
 			{
-				insCurIns.bImmType = IMM_32BIT;
+				pstState->insCurIns.bImmType = IMM_32BIT;
 				// Construct the output string
-				StringCchCopy(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes), awszRegCodes32[REGCODE_EAX]);
-				insCurIns.fDesStrSet = TRUE;
+				StringCchCopy(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes), awszRegCodes32[REGCODE_EAX]);
+				pstState->insCurIns.fDesStrSet = TRUE;
 			}
-			insCurIns.fImm = TRUE;
-			dsNextState = DASM_STATE_IMM;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->dsNextState = DASM_STATE_IMM;
 			break;
 
 		case 0x80:
 		case 0x81:
 			// wbit and opsize attrib used to set bImmType in MODRM
-			insCurIns.fImm = TRUE;
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		case 0x83:	// with sign-extension
-			insCurIns.bImmType = IMM_8BIT;
-			insCurIns.fImm = TRUE;
-			insCurIns.fImmSignEx = TRUE;
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.bImmType = IMM_8BIT;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.fImmSignEx = TRUE;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		default:
@@ -3717,7 +4681,7 @@ BOOL OPCHndlrALU_ADD(BYTE bOpcode)
  * 2B /r	SUB r32,r/m32
  *
  */
-BOOL OPCHndlrALU_SUB(BYTE bOpcode)
+BOOL OPCHndlrALU_SUB(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -3727,53 +4691,53 @@ BOOL OPCHndlrALU_SUB(BYTE bOpcode)
 	{
 		case 0x1c:
 		case 0x2c:
-			insCurIns.fImm = TRUE;
-			insCurIns.bImmType = IMM_8BIT;
-			StringCchCopy(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes), awszRegCodes8[REGCODE_AL]);
-			insCurIns.fDesStrSet = TRUE;
-			dsNextState = DASM_STATE_IMM;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.bImmType = IMM_8BIT;
+			StringCchCopy(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes), awszRegCodes8[REGCODE_AL]);
+			pstState->insCurIns.fDesStrSet = TRUE;
+			pstState->dsNextState = DASM_STATE_IMM;
 			break;
 
 		case 0x1d:
 		case 0x2d:
 		{
-			insCurIns.fImm = TRUE;
-			if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			pstState->insCurIns.fImm = TRUE;
+			if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 			{
 				// 16bit operand
-				insCurIns.bImmType = IMM_16BIT;
-				StringCchCopy(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes), 
+				pstState->insCurIns.bImmType = IMM_16BIT;
+				StringCchCopy(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes), 
 								awszRegCodes16[REGCODE_AX]);
-				insCurIns.fDesStrSet = TRUE;
+				pstState->insCurIns.fDesStrSet = TRUE;
 			}
 			else
 			{
 				// 32bit
-				insCurIns.bImmType = IMM_32BIT;
-				StringCchCopy(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes), 
+				pstState->insCurIns.bImmType = IMM_32BIT;
+				StringCchCopy(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes), 
 								awszRegCodes32[REGCODE_EAX]);
-				insCurIns.fDesStrSet = TRUE;
+				pstState->insCurIns.fDesStrSet = TRUE;
 			}
 
-			dsNextState = DASM_STATE_IMM;
+			pstState->dsNextState = DASM_STATE_IMM;
 			break;
 		}
 
 		case 0x80:	// wbit and opsize attrib can be used to determine
 		case 0x81:	// size of operands
-			insCurIns.fImm = TRUE;
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		case 0x83:	// imm8 always src with sign-extension
-			insCurIns.fImm = TRUE;
-			insCurIns.bImmType = IMM_8BIT;
-			insCurIns.fImmSignEx = TRUE;
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.bImmType = IMM_8BIT;
+			pstState->insCurIns.fImmSignEx = TRUE;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		case 0x18:	// wbit and opsize attrib can be used
@@ -3784,9 +4748,9 @@ BOOL OPCHndlrALU_SUB(BYTE bOpcode)
 		case 0x29:
 		case 0x2a:
 		case 0x2b:
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_R;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 	}// switch(bOpcode)
@@ -3812,7 +4776,7 @@ BOOL OPCHndlrALU_SUB(BYTE bOpcode)
  * F7 /4	MUL r/m16	Unsigned multiply (DX:AX = AX * r/m16)
  * F7 /4	MUL r/m32	Unsigned multiply (EDX:EAX = EAX * r/m32)
  */
-BOOL OPCHndlrALU_MUL(BYTE bOpcode)
+BOOL OPCHndlrALU_MUL(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -3826,28 +4790,28 @@ BOOL OPCHndlrALU_MUL(BYTE bOpcode)
 	{
 		case 0xf6:	// wBit and opsize attrib can be used
 		case 0xf7:
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
 			break;
 
 		case 0xaf:	// 2byte opcode
 			// opsize attrib can be used
-			insCurIns.bModRMType = MODRM_TYPE_R;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 			break;
 
 		case 0x6b:
-			insCurIns.bModRMType = MODRM_TYPE_R;
-			insCurIns.fImm = TRUE;
-			insCurIns.bImmType = IMM_8BIT;
-			insCurIns.fImmSignEx = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.bImmType = IMM_8BIT;
+			pstState->insCurIns.fImmSignEx = TRUE;
 			break;
 
 		case 0x69:
-			insCurIns.bModRMType = MODRM_TYPE_R;
-			insCurIns.fImm = TRUE;
-			if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-				insCurIns.bImmType = IMM_16BIT;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+			pstState->insCurIns.fImm = TRUE;
+			if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+				pstState->insCurIns.bImmType = IMM_16BIT;
 			else
-				insCurIns.bImmType = IMM_32BIT;
+				pstState->insCurIns.bImmType = IMM_32BIT;
 			break;
 
 		default:
@@ -3857,8 +4821,8 @@ BOOL OPCHndlrALU_MUL(BYTE bOpcode)
 	}// switch(bOpcode)
 
 	// all variations have a ModRM byte
-	insCurIns.fModRM = TRUE;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	
 	return TRUE;
 }
@@ -3872,7 +4836,7 @@ BOOL OPCHndlrALU_MUL(BYTE bOpcode)
  * F7 /7	IDIV r/m16
  * F7 /7	IDIV r/m32
  */
-BOOL OPCHndlrALU_DIV(BYTE bOpcode)
+BOOL OPCHndlrALU_DIV(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -3880,13 +4844,13 @@ BOOL OPCHndlrALU_DIV(BYTE bOpcode)
 
 	// The reg/opcode field in the ModRM byte is different for
 	// div and idiv, so the OPCHndlrMulti_fx() function would
-	// have printed the correct mnemonic into wszCurInsStr.
+	// have printed the correct mnemonic into pstState->wszCurInsStr.
 	switch(bOpcode)
 	{
 		case 0xf6:	// wBit and opsize attrib can be used
 		case 0xf7:
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
 			break;
 
 		default:
@@ -3895,7 +4859,7 @@ BOOL OPCHndlrALU_DIV(BYTE bOpcode)
 		
 	}// switch(bOpcode)
 
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -3906,7 +4870,7 @@ BOOL OPCHndlrALU_DIV(BYTE bOpcode)
  * 40+ rw	INC r16
  * 40+ rd	INC r32
  */
-BOOL OPCHndlrALU_INC(BYTE bOpcode)
+BOOL OPCHndlrALU_INC(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -3916,19 +4880,19 @@ BOOL OPCHndlrALU_INC(BYTE bOpcode)
 
 	if(bOpcode >= OPC_INC_BEG && bOpcode <= OPC_INC_END)
 	{
-		if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-			StringCchCopy(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), awszRegCodes16[wReg]);
+		if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			StringCchCopy(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), awszRegCodes16[wReg]);
 		else
-			StringCchCopy(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), awszRegCodes32[wReg]);
-		insCurIns.fSrcStrSet = TRUE;
-		dsNextState = DASM_STATE_DUMP;
+			StringCchCopy(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), awszRegCodes32[wReg]);
+		pstState->insCurIns.fSrcStrSet = TRUE;
+		pstState->dsNextState = DASM_STATE_DUMP;
 	}
 	else if(bOpcode == 0xfe || bOpcode == 0xff)
 	{
 		// wBit and opsize attrib can be used
-		insCurIns.fModRM = TRUE;
-		insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-		dsNextState = DASM_STATE_MOD_RM;
+		pstState->insCurIns.fModRM = TRUE;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+		pstState->dsNextState = DASM_STATE_MOD_RM;
 	}
 	else
 	{
@@ -3946,7 +4910,7 @@ BOOL OPCHndlrALU_INC(BYTE bOpcode)
  * 48+rw	DEC r16
  * 48+rd	DEC r32
  */
-BOOL OPCHndlrALU_DEC(BYTE bOpcode)
+BOOL OPCHndlrALU_DEC(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -3956,19 +4920,19 @@ BOOL OPCHndlrALU_DEC(BYTE bOpcode)
 
 	if(bOpcode >= OPC_DEC_BEG && bOpcode <= OPC_DEC_END)
 	{
-		if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-			StringCchCopy(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), awszRegCodes16[wReg]);
+		if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			StringCchCopy(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), awszRegCodes16[wReg]);
 		else
-			StringCchCopy(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), awszRegCodes32[wReg]);
-		insCurIns.fSrcStrSet = TRUE;
-		dsNextState = DASM_STATE_DUMP;
+			StringCchCopy(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), awszRegCodes32[wReg]);
+		pstState->insCurIns.fSrcStrSet = TRUE;
+		pstState->dsNextState = DASM_STATE_DUMP;
 	}
 	else if(bOpcode == 0xfe || bOpcode == 0xff)
 	{
 		// wBit and opsize attrib can be used
-		insCurIns.fModRM = TRUE;
-		insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-		dsNextState = DASM_STATE_MOD_RM;
+		pstState->insCurIns.fModRM = TRUE;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+		pstState->dsNextState = DASM_STATE_MOD_RM;
 	}
 	else
 	{
@@ -4034,25 +4998,25 @@ BOOL OPCHndlrALU_DEC(BYTE bOpcode)
  * 0F AD SHRD r/m32,r32,CL		Shift r/m32 to right CL places while shifting bits from r32 in from the left
  *
  */
-BOOL OPCHndlrALU_Shift(BYTE bOpcode)
+BOOL OPCHndlrALU_Shift(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	if(bOpcodeHigh != 0xA)	// not shrd or shld
-		if( ! OPCHndlrALU_Shift_SetInsStr(bOpcode) )
+	if(pstState->bOpcodeHigh != 0xA)	// not shrd or shld
+		if( ! OPCHndlrALU_Shift_SetInsStr(pstState, bOpcode) )
 			return FALSE;
 
 	switch(bOpcode)
 	{
 		case 0xc0:
 		case 0xc1:
-			insCurIns.fImm = TRUE;
-			insCurIns.bImmType = IMM_8BIT;
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.bImmType = IMM_8BIT;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		// Destination is either a reg/mem and it can be 
@@ -4061,52 +5025,52 @@ BOOL OPCHndlrALU_Shift(BYTE bOpcode)
 		// Only difference is the source operand: CL/1
 		case 0xd0:	// src = 1
 		case 0xd1:	
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			StringCchPrintf(insCurIns.wszCurInsStrOpr3, 
-							_countof(insCurIns.wszCurInsStrOpr3), L"1");
-			insCurIns.fOpr3StrSet = TRUE;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrOpr3, 
+							_countof(pstState->insCurIns.wszCurInsStrOpr3), L"1");
+			pstState->insCurIns.fOpr3StrSet = TRUE;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		case 0xd2:	// src = CL register
 		case 0xd3:
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			StringCchPrintf(insCurIns.wszCurInsStrOpr3, 
-							_countof(insCurIns.wszCurInsStrOpr3), L"cl");
-			insCurIns.fOpr3StrSet = TRUE;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrOpr3, 
+							_countof(pstState->insCurIns.wszCurInsStrOpr3), L"cl");
+			pstState->insCurIns.fOpr3StrSet = TRUE;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		case 0xa4:	// SHLD r/m16,r16,imm8
 		case 0xac:	// SHRD r/m16,r16,imm8
-			insCurIns.fSpecialInstruction = TRUE;		// No w-bit
-			if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-				insCurIns.bOperandSizeDes = insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
+			pstState->insCurIns.fSpecialInstruction = TRUE;		// No w-bit
+			if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+				pstState->insCurIns.bOperandSizeDes = pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
 			else
-				insCurIns.bOperandSizeDes = insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-			insCurIns.fModRM = TRUE;
-			insCurIns.fImm = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_R;
-			insCurIns.bImmType = IMM_8BIT;
-			dsNextState = DASM_STATE_MOD_RM;
+				pstState->insCurIns.bOperandSizeDes = pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+			pstState->insCurIns.bImmType = IMM_8BIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		case 0xa5:	// shld ax,bx,cl
 		case 0xad:	// shrd ax,bx,cl
-			insCurIns.fSpecialInstruction = TRUE;		// No w-bit
-			if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-				insCurIns.bOperandSizeDes = insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
+			pstState->insCurIns.fSpecialInstruction = TRUE;		// No w-bit
+			if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+				pstState->insCurIns.bOperandSizeDes = pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
 			else
-				insCurIns.bOperandSizeDes = insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				pstState->insCurIns.bOperandSizeDes = pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
 
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_R;
-			insCurIns.fOpr3StrSet = TRUE;
-			StringCchPrintf(insCurIns.wszCurInsStrOpr3, 
-							_countof(insCurIns.wszCurInsStrOpr3), L"cl");
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+			pstState->insCurIns.fOpr3StrSet = TRUE;
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrOpr3, 
+							_countof(pstState->insCurIns.wszCurInsStrOpr3), L"cl");
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 		
 		default:
@@ -4126,10 +5090,10 @@ BOOL OPCHndlrALU_Shift(BYTE bOpcode)
 //		5		SHR
 //		6		SAL
 //		7		SAR
-BOOL OPCHndlrALU_Shift_SetInsStr(BYTE bOpcode)
+BOOL OPCHndlrALU_Shift_SetInsStr(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
-		wprintf_s(L"%s(): %xh %xh\n", __FUNCTIONW__, bOpcode, *pByteInCode);
+		wprintf_s(L"%s(): %xh %xh\n", __FUNCTIONW__, bOpcode, *pstState->pbCurrentCodePtr);
 	#endif
 
 	// Check the 'reg/opcode' field of the ModRM byte
@@ -4139,22 +5103,22 @@ BOOL OPCHndlrALU_Shift_SetInsStr(BYTE bOpcode)
 	static WCHAR awszMnemonics[][MAX_OPCODE_NAME_LEN+1] = {
 					L"rol",	L"ror",	L"rcl",	L"rcr", L"shl", L"shr", L"sal", L"sar"};
 
-	Util_vSplitModRMByte(*pByteInCode, NULL, &bOpcodeEx, NULL);
+	Util_vSplitModRMByte(*pstState->pbCurrentCodePtr, NULL, &bOpcodeEx, NULL);
 	if(bOpcodeEx < 0 || bOpcodeEx > 7)
 		return FALSE;
 
-	StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[bOpcodeEx]);
+	StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[bOpcodeEx]);
 	
 	return TRUE;
 }
 
-BOOL OPCHndlrALU_SALC(BYTE bOpcode)
+BOOL OPCHndlrALU_SALC(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -4178,7 +5142,7 @@ BOOL OPCHndlrALU_SALC(BYTE bOpcode)
  * 0B /r	OR r16,r/m16
  * 0B /r	OR r32,r/m32
  */
-BOOL OPCHndlrALU_OR(BYTE bOpcode)
+BOOL OPCHndlrALU_OR(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -4187,57 +5151,57 @@ BOOL OPCHndlrALU_OR(BYTE bOpcode)
 	switch(bOpcode)
 	{
 		case 0x0c:
-			insCurIns.fImm = TRUE;
-			insCurIns.bImmType = IMM_8BIT;
-			StringCchCopy(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes), awszRegCodes8[REGCODE_AL]);
-			insCurIns.fDesStrSet = TRUE;
-			dsNextState = DASM_STATE_IMM;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.bImmType = IMM_8BIT;
+			StringCchCopy(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes), awszRegCodes8[REGCODE_AL]);
+			pstState->insCurIns.fDesStrSet = TRUE;
+			pstState->dsNextState = DASM_STATE_IMM;
 			break;
 
 		case 0x0d:
 		{
-			insCurIns.fImm = TRUE;
-			if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			pstState->insCurIns.fImm = TRUE;
+			if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 			{
-				insCurIns.bImmType = IMM_16BIT;
-				StringCchCopy(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes), awszRegCodes16[REGCODE_AX]);
+				pstState->insCurIns.bImmType = IMM_16BIT;
+				StringCchCopy(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes), awszRegCodes16[REGCODE_AX]);
 			}
 			else
 			{
-				insCurIns.bImmType = IMM_32BIT;
-				StringCchCopy(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes), awszRegCodes32[REGCODE_EAX]);
+				pstState->insCurIns.bImmType = IMM_32BIT;
+				StringCchCopy(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes), awszRegCodes32[REGCODE_EAX]);
 			}
-			insCurIns.fDesStrSet = TRUE;
-			dsNextState = DASM_STATE_IMM;
+			pstState->insCurIns.fDesStrSet = TRUE;
+			pstState->dsNextState = DASM_STATE_IMM;
 			break;
 		
 		}// case 0x0d
 
 		case 0x80:	// bImmType can be set in the MODRM state using wBit and opsize attrib
 		case 0x81:
-			insCurIns.fImm = TRUE;
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		case 0x83:	// 83 /1 ib		OR r/m16,imm8
 					// 83 /1 ib		OR r/m32,imm8
-			insCurIns.fImm = TRUE;
-			insCurIns.bImmType = IMM_8BIT;
-			insCurIns.fImmSignEx = TRUE;
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.bImmType = IMM_8BIT;
+			pstState->insCurIns.fImmSignEx = TRUE;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		case 0x08:	// 08 /r	OR r/m8,r8
 		case 0x09:
 		case 0x0a:
 		case 0x0b:
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_R;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		default:
@@ -4264,7 +5228,7 @@ BOOL OPCHndlrALU_OR(BYTE bOpcode)
  * 23 /r		AND r16,r/m16
  * 23 /r		AND r32,r/m32
  */
-BOOL OPCHndlrALU_AND(BYTE bOpcode)
+BOOL OPCHndlrALU_AND(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -4277,56 +5241,56 @@ BOOL OPCHndlrALU_AND(BYTE bOpcode)
 		case 0x21:
 		case 0x22:
 		case 0x23:
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_R;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		case 0x24:
-			insCurIns.fImm = TRUE;
-			insCurIns.bImmType = IMM_8BIT;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.bImmType = IMM_8BIT;
 
 			// Construct the output string
-			StringCchCopy(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes), awszRegCodes8[REGCODE_AL]);
-			insCurIns.fDesStrSet = TRUE;
+			StringCchCopy(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes), awszRegCodes8[REGCODE_AL]);
+			pstState->insCurIns.fDesStrSet = TRUE;
 
-			dsNextState = DASM_STATE_IMM;
+			pstState->dsNextState = DASM_STATE_IMM;
 			break;
 
 		case 0x25:
-			insCurIns.fImm = TRUE;
-			if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			pstState->insCurIns.fImm = TRUE;
+			if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 			{
-				insCurIns.bImmType = IMM_16BIT;
+				pstState->insCurIns.bImmType = IMM_16BIT;
 				// Construct the output string
-				StringCchCopy(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes), awszRegCodes16[REGCODE_AX]);
+				StringCchCopy(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes), awszRegCodes16[REGCODE_AX]);
 			}
 			else
 			{
-				insCurIns.bImmType = IMM_32BIT;
+				pstState->insCurIns.bImmType = IMM_32BIT;
 				// Construct the output string
-				StringCchCopy(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes), awszRegCodes32[REGCODE_EAX]);
+				StringCchCopy(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes), awszRegCodes32[REGCODE_EAX]);
 			}
-			insCurIns.fDesStrSet = TRUE;
-			dsNextState = DASM_STATE_IMM;
+			pstState->insCurIns.fDesStrSet = TRUE;
+			pstState->dsNextState = DASM_STATE_IMM;
 
 			break;
 
 		case 0x80:	// wbit and opsize attrib
 		case 0x81:
-			insCurIns.fImm = TRUE;
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		case 0x83:
-			insCurIns.bImmType = IMM_8BIT;
-			insCurIns.fImm = TRUE;
-			insCurIns.fImmSignEx = TRUE;
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.bImmType = IMM_8BIT;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.fImmSignEx = TRUE;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		default:
@@ -4355,7 +5319,7 @@ BOOL OPCHndlrALU_AND(BYTE bOpcode)
  * 33 /r	XOR r16,r/m16
  * 33 /r	XOR r32,r/m32
  */
-BOOL OPCHndlrALU_XOR(BYTE bOpcode)
+BOOL OPCHndlrALU_XOR(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -4364,63 +5328,63 @@ BOOL OPCHndlrALU_XOR(BYTE bOpcode)
 	switch(bOpcode)
 	{
 		case 0x34:
-			insCurIns.fImm = TRUE;
-			insCurIns.bImmType = IMM_8BIT;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.bImmType = IMM_8BIT;
 
 			// Construct the output string
-			StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								awszRegCodes8[REGCODE_AL]);
-			insCurIns.fDesStrSet = TRUE;
-			dsNextState = DASM_STATE_IMM;
+			pstState->insCurIns.fDesStrSet = TRUE;
+			pstState->dsNextState = DASM_STATE_IMM;
 			break;
 
 		case 0x35:
 		{
-			insCurIns.fImm = TRUE;
-			if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			pstState->insCurIns.fImm = TRUE;
+			if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 			{
-				insCurIns.bImmType = IMM_16BIT;
+				pstState->insCurIns.bImmType = IMM_16BIT;
 				// Construct the output string
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								awszRegCodes16[REGCODE_AX]);
 			}
 			else
 			{
-				insCurIns.bImmType = IMM_32BIT;
+				pstState->insCurIns.bImmType = IMM_32BIT;
 				// Construct the output string
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								awszRegCodes32[REGCODE_EAX]);
 			}
-			insCurIns.fDesStrSet = TRUE;
-			dsNextState = DASM_STATE_IMM;
+			pstState->insCurIns.fDesStrSet = TRUE;
+			pstState->dsNextState = DASM_STATE_IMM;
 			break;
 		
 		}//case 0x35
 
 		case 0x80:	// op size can be determined by wbit and op size prefix
 		case 0x81:
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			insCurIns.fImm = TRUE;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		case 0x83:
-			insCurIns.fImm = TRUE;
-			insCurIns.bImmType = IMM_8BIT;
-			insCurIns.fImmSignEx = TRUE;
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.bImmType = IMM_8BIT;
+			pstState->insCurIns.fImmSignEx = TRUE;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		case 0x30:
 		case 0x31:
 		case 0x32:	// d-bit is set
 		case 0x33:	
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_R;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		default:
@@ -4436,15 +5400,15 @@ BOOL OPCHndlrALU_XOR(BYTE bOpcode)
  * F7 /2	NOT r/m16	Reverse each bit of r/m16
  * F7 /2	NOT r/m32	Reverse each bit of r/m32
  */
-BOOL OPCHndlrALU_NOT(BYTE bOpcode)
+BOOL OPCHndlrALU_NOT(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -4453,15 +5417,15 @@ BOOL OPCHndlrALU_NOT(BYTE bOpcode)
  * F7 /3	NEG r/m16	Two’s complement negate r/m16
  * F7 /3	NEG r/m32	Two’s complement negate r/m32
  */
-BOOL OPCHndlrALU_NEG(BYTE bOpcode)
+BOOL OPCHndlrALU_NEG(PDASMSTATE pstState, BYTE bOpcode)
 {	
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -4471,49 +5435,49 @@ BOOL OPCHndlrALU_NEG(BYTE bOpcode)
 /*	** DAA **
  * 27	DAA		Decimal adjust AL after addition
  */
-BOOL OPCHndlrALU_DAA(BYTE bOpcode)
+BOOL OPCHndlrALU_DAA(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 /*	** DAS **
  * 2F	DAS		Decimal adjust AL after subtraction
  */
-BOOL OPCHndlrALU_DAS(BYTE bOpcode)
+BOOL OPCHndlrALU_DAS(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
-BOOL OPCHndlrALU_AAA(BYTE bOpcode)
+BOOL OPCHndlrALU_AAA(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 /*
  * 3F	AAS
  */
-BOOL OPCHndlrALU_AAS(BYTE bOpcode)
+BOOL OPCHndlrALU_AAS(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -4521,16 +5485,16 @@ BOOL OPCHndlrALU_AAS(BYTE bOpcode)
  * D4 0A	AAM
  * D4 ib	AAM	 - not handled
  */
-BOOL OPCHndlrALU_AAM(BYTE bOpcode)
+BOOL OPCHndlrALU_AAM(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
 	// move past 0a after the opcode d4
-	++pByteInCode;
+	++(pstState->pbCurrentCodePtr);
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -4539,16 +5503,16 @@ BOOL OPCHndlrALU_AAM(BYTE bOpcode)
  * D5 0A	AAD
  * D5 ib	AAD	 - not handled
  */
-BOOL OPCHndlrALU_AAD(BYTE bOpcode)
+BOOL OPCHndlrALU_AAD(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
 	// move past 0a after the opcode d5
-	++pByteInCode;
+	++pstState->pbCurrentCodePtr;
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -4568,7 +5532,7 @@ BOOL OPCHndlrALU_AAD(BYTE bOpcode)
  * 87 /r XCHG r/m32,r32		Exchange r32 with doubleword from r/m32
  * 87 /r XCHG r32,r/m32		Exchange doubleword from r/m32 with r32
  */
-BOOL OPCHndlrMem_XCHG(BYTE bOpcode)
+BOOL OPCHndlrMem_XCHG(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -4578,32 +5542,32 @@ BOOL OPCHndlrMem_XCHG(BYTE bOpcode)
 	{
 		BYTE bReg = bOpcode - OPC_XCHG_BEG;
 
-		if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+		if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 		{
 			// 16bit regs
-			StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								awszRegCodes16[REGCODE_AX]);
-			StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 								awszRegCodes16[bReg]);
 		}
 		else
 		{
 			// 32bit regs
-			StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								awszRegCodes32[REGCODE_AX]);
-			StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 								awszRegCodes32[bReg]);
 		}
-		insCurIns.fSrcStrSet = TRUE;
-		insCurIns.fDesStrSet = TRUE;
-		dsNextState = DASM_STATE_DUMP;
+		pstState->insCurIns.fSrcStrSet = TRUE;
+		pstState->insCurIns.fDesStrSet = TRUE;
+		pstState->dsNextState = DASM_STATE_DUMP;
 	}
 	else if(bOpcode == 0x86 || bOpcode == 0x87)
 	{
 		// op size can be determined by w-bit and op size attrib
-		insCurIns.fModRM = TRUE;
-		insCurIns.bModRMType = MODRM_TYPE_R;
-		dsNextState = DASM_STATE_MOD_RM;
+		pstState->insCurIns.fModRM = TRUE;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+		pstState->dsNextState = DASM_STATE_MOD_RM;
 	}
 	else
 	{
@@ -4645,7 +5609,7 @@ BOOL OPCHndlrMem_XCHG(BYTE bOpcode)
  * ** In 32-bit mode, the assembler may insert the 16-bit operand-size prefix with this instruction.
  *
  */
-BOOL OPCHndlrMem_MOV(BYTE bOpcode)
+BOOL OPCHndlrMem_MOV(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -4658,154 +5622,154 @@ BOOL OPCHndlrMem_MOV(BYTE bOpcode)
 		case 0x89:
 		case 0x8a:
 		case 0x8b:
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_R;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		case 0x8c:	// 8C /r	MOV r/m16,Sreg
 		{	
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_R;
-			insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+			pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
 
-			insCurIns.fSpecialInstruction = TRUE;
-			insCurIns.bRegTypeSrc = REGTYPE_SREG;
-			insCurIns.bRegTypeDest = REGTYPE_GREG;	// only if Mod+RM bits suggest a register destination
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fSpecialInstruction = TRUE;
+			pstState->insCurIns.bRegTypeSrc = REGTYPE_SREG;
+			pstState->insCurIns.bRegTypeDest = REGTYPE_GREG;	// only if Mod+RM bits suggest a register destination
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 		}
 
 		case 0x8e:	// 8C /r	MOV Sreg,r/m16
 		{	
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_R;
-			insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+			pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
 
-			insCurIns.fSpecialInstruction = TRUE;
-			insCurIns.bRegTypeSrc = REGTYPE_GREG;	// only if Mod+RM bits suggest a register source
-			insCurIns.bRegTypeDest = REGTYPE_SREG;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fSpecialInstruction = TRUE;
+			pstState->insCurIns.bRegTypeSrc = REGTYPE_GREG;	// only if Mod+RM bits suggest a register source
+			pstState->insCurIns.bRegTypeDest = REGTYPE_SREG;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 		}
 
 		case 0xa0:	// A0	MOV AL,moffs8*		Move byte at (seg:offset) to AL
 		{
-			insCurIns.fDataOffset = TRUE;
+			pstState->insCurIns.fDataOffset = TRUE;
 
 			// determine offset size using address size attrib
-			if(insCurIns.wPrefixTypes & PREFIX_ADSIZE)
+			if(pstState->insCurIns.wPrefixTypes & PREFIX_ADSIZE)
 				// 16bit offset
-				insCurIns.bImmType = IMM_16BIT;
+				pstState->insCurIns.bImmType = IMM_16BIT;
 			else
 				// 32bit offset
-				insCurIns.bImmType = IMM_32BIT;
+				pstState->insCurIns.bImmType = IMM_32BIT;
 
-			insCurIns.pwszPtrStr = awszPtrStr[PTR_STR_INDEX_BYTE];
-			StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+			pstState->insCurIns.pwszPtrStr = awszPtrStr[PTR_STR_INDEX_BYTE];
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 							L"%s", awszRegCodes8[REGCODE_AL]);
-			insCurIns.fDesStrSet = TRUE;
-			dsNextState = DASM_STATE_IMM;
+			pstState->insCurIns.fDesStrSet = TRUE;
+			pstState->dsNextState = DASM_STATE_IMM;
 			break;
 		}
 
 		case 0xa1:	// A1	MOV AX,moffs16*
 		{
-			insCurIns.fDataOffset = TRUE;
+			pstState->insCurIns.fDataOffset = TRUE;
 
 			// determine offset size using address size attrib
-			if(insCurIns.wPrefixTypes & PREFIX_ADSIZE)
+			if(pstState->insCurIns.wPrefixTypes & PREFIX_ADSIZE)
 				// 16bit offset
-				insCurIns.bImmType = IMM_16BIT;
+				pstState->insCurIns.bImmType = IMM_16BIT;
 			else
 				// 32bit offset
-				insCurIns.bImmType = IMM_32BIT;
+				pstState->insCurIns.bImmType = IMM_32BIT;
 
 			// determine operand size using opsize attrib
-			if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 			{
-				insCurIns.pwszPtrStr = awszPtrStr[PTR_STR_INDEX_WORD];
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				pstState->insCurIns.pwszPtrStr = awszPtrStr[PTR_STR_INDEX_WORD];
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								L"%s", awszRegCodes16[REGCODE_AX]);
 			}
 			else
 			{
-				insCurIns.pwszPtrStr = awszPtrStr[PTR_STR_INDEX_DWORD];
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				pstState->insCurIns.pwszPtrStr = awszPtrStr[PTR_STR_INDEX_DWORD];
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 									L"%s", awszRegCodes32[REGCODE_EAX]);
 			}
 
-			insCurIns.fDesStrSet = TRUE;
-			dsNextState = DASM_STATE_IMM;
+			pstState->insCurIns.fDesStrSet = TRUE;
+			pstState->dsNextState = DASM_STATE_IMM;
 			break;
 		}
 
 		case 0xa2:	// A2	MOV moffs8*,AL
 		{
-			insCurIns.fDataOffset = TRUE;
+			pstState->insCurIns.fDataOffset = TRUE;
 
 			// determine offset size using address size attrib
-			if(insCurIns.wPrefixTypes & PREFIX_ADSIZE)
+			if(pstState->insCurIns.wPrefixTypes & PREFIX_ADSIZE)
 				// 16bit offset
-				insCurIns.bImmType = IMM_16BIT;
+				pstState->insCurIns.bImmType = IMM_16BIT;
 			else
 				// 32bit offset
-				insCurIns.bImmType = IMM_32BIT;
+				pstState->insCurIns.bImmType = IMM_32BIT;
 
-			insCurIns.pwszPtrStr = awszPtrStr[PTR_STR_INDEX_BYTE];
-			StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+			pstState->insCurIns.pwszPtrStr = awszPtrStr[PTR_STR_INDEX_BYTE];
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 							L"%s", awszRegCodes8[REGCODE_AL]);
-			insCurIns.fSrcStrSet = TRUE;
-			dsNextState = DASM_STATE_IMM;
+			pstState->insCurIns.fSrcStrSet = TRUE;
+			pstState->dsNextState = DASM_STATE_IMM;
 			break;
 		}
 
 		case 0xa3:	// A3	MOV moffs16*,AX
 		{
-			insCurIns.fDataOffset = TRUE;
-			if(insCurIns.wPrefixTypes & PREFIX_ADSIZE)
+			pstState->insCurIns.fDataOffset = TRUE;
+			if(pstState->insCurIns.wPrefixTypes & PREFIX_ADSIZE)
 				// 16bit offset
-				insCurIns.bImmType = IMM_16BIT;
+				pstState->insCurIns.bImmType = IMM_16BIT;
 			else
 				// 32bit offset
-				insCurIns.bImmType = IMM_32BIT;
+				pstState->insCurIns.bImmType = IMM_32BIT;
 			
 			// determine operand size using opsize attrib
-			if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 			{
-				insCurIns.pwszPtrStr = awszPtrStr[PTR_STR_INDEX_WORD];
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+				pstState->insCurIns.pwszPtrStr = awszPtrStr[PTR_STR_INDEX_WORD];
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 								L"%s", awszRegCodes16[REGCODE_AX]);
 			}
 			else
 			{
-				insCurIns.pwszPtrStr = awszPtrStr[PTR_STR_INDEX_DWORD];
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+				pstState->insCurIns.pwszPtrStr = awszPtrStr[PTR_STR_INDEX_DWORD];
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 								L"%s", awszRegCodes32[REGCODE_EAX]);
 			}
 			
-			insCurIns.fSrcStrSet = TRUE;
-			dsNextState = DASM_STATE_IMM;
+			pstState->insCurIns.fSrcStrSet = TRUE;
+			pstState->dsNextState = DASM_STATE_IMM;
 			break;
 		}
 
 		case 0xc6:
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			insCurIns.fImm = TRUE;
-			insCurIns.bImmType = IMM_8BIT;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.bImmType = IMM_8BIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		case 0xc7:
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			insCurIns.fImm = TRUE;
-			if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-				insCurIns.bImmType = IMM_16BIT;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->insCurIns.fImm = TRUE;
+			if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+				pstState->insCurIns.bImmType = IMM_16BIT;
 			else
-				insCurIns.bImmType = IMM_32BIT;
-			dsNextState = DASM_STATE_MOD_RM;
+				pstState->insCurIns.bImmType = IMM_32BIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		default:
@@ -4813,32 +5777,32 @@ BOOL OPCHndlrMem_MOV(BYTE bOpcode)
 			if(bOpcode >= 0xb0 && bOpcode <= 0xb7)
 			{
 				BYTE bReg = bOpcode - 0xb0;
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes), 
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes), 
 								L"%s", awszRegCodes8[bReg]);
-				insCurIns.fDesStrSet = TRUE;
-				insCurIns.fImm = TRUE;
-				insCurIns.bImmType = IMM_8BIT;
-				dsNextState = DASM_STATE_IMM;
+				pstState->insCurIns.fDesStrSet = TRUE;
+				pstState->insCurIns.fImm = TRUE;
+				pstState->insCurIns.bImmType = IMM_8BIT;
+				pstState->dsNextState = DASM_STATE_IMM;
 			}
 			else if(bOpcode >= 0xb8 && bOpcode <= 0xbf)
 			{
 				BYTE bReg = bOpcode - 0xb8;
-				if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+				if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 				{
-					StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes), 
+					StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes), 
 									L"%s", awszRegCodes16[bReg]);
-					insCurIns.fDesStrSet = TRUE;
-					insCurIns.bImmType = IMM_16BIT;
+					pstState->insCurIns.fDesStrSet = TRUE;
+					pstState->insCurIns.bImmType = IMM_16BIT;
 				}
 				else
 				{
-					StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes), 
+					StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes), 
 									L"%s", awszRegCodes32[bReg]);
-					insCurIns.fDesStrSet = TRUE;
-					insCurIns.bImmType = IMM_32BIT;
+					pstState->insCurIns.fDesStrSet = TRUE;
+					pstState->insCurIns.bImmType = IMM_32BIT;
 				}
-				insCurIns.fImm = TRUE;
-				dsNextState = DASM_STATE_IMM;
+				pstState->insCurIns.fImm = TRUE;
+				pstState->dsNextState = DASM_STATE_IMM;
 			}
 			else
 			{
@@ -4857,14 +5821,14 @@ BOOL OPCHndlrMem_MOV(BYTE bOpcode)
  * 8D /r	LEA r16,m	Store effective address for m in register r16
  * 8D /r	LEA r32,m	Store effective address for m in register r32
  */
-BOOL OPCHndlrMem_LEA(BYTE bOpcode)
+BOOL OPCHndlrMem_LEA(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 
 	/*
 	 * Manually set bDBit because it is insignificant for this instruction
@@ -4872,20 +5836,20 @@ BOOL OPCHndlrMem_LEA(BYTE bOpcode)
 	 * If we continue with bDBit = 0, then this instruction will be 
 	 * decoded as LEA m, r32 :P
 	 */
-	insCurIns.bDBit = 1;
-	insCurIns.fSpecialInstruction = TRUE;
-	if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+	pstState->insCurIns.bDBit = 1;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 	{
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_UNDEF;
-		insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_UNDEF;
+		pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
 	}
 	else
 	{
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_UNDEF;
-		insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_UNDEF;
+		pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
 	}
 
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -4893,23 +5857,23 @@ BOOL OPCHndlrMem_LEA(BYTE bOpcode)
  * 98 CBW	AX = sign-extend of AL
  * 98 CWDE	EAX = sign-extend of AX
  */
-BOOL OPCHndlrMem_CWDE(BYTE bOpcode)
+BOOL OPCHndlrMem_CWDE(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	// Override the wszCurInsStr because mnemonic depends 
+	// Override the pstState->wszCurInsStr because mnemonic depends 
 	// on the operand size
-	if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+	if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 	{
-		StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"cbw");
+		StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"cbw");
 	}
 	else
 	{
-		StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"cwde");
+		StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"cwde");
 	}
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -4917,46 +5881,46 @@ BOOL OPCHndlrMem_CWDE(BYTE bOpcode)
  * 99	CWD		DX:AX = sign-extend of AX
  * 99	CDQ		EDX:EAX = sign-extend of EAX
  */
-BOOL OPCHndlrMem_CDQ(BYTE bOpcode)
+BOOL OPCHndlrMem_CDQ(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	// Override the wszCurInsStr because mnemonic depends 
+	// Override the pstState->wszCurInsStr because mnemonic depends 
 	// on the operand size
-	if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+	if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 	{
-		StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"cwd");
+		StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"cwd");
 	}
 	else
 	{
-		StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"cdq");
+		StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"cdq");
 	}
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 /*	** SAHF **
  * 9E	SAHF	Loads SF, ZF, AF, PF, and CF from AH into EFLAGS register
  */
-BOOL OPCHndlrMem_SAHF(BYTE bOpcode)
+BOOL OPCHndlrMem_SAHF(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
-BOOL OPCHndlrMem_LAHF(BYTE bOpcode)
+BOOL OPCHndlrMem_LAHF(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -4965,7 +5929,7 @@ BOOL OPCHndlrMem_LAHF(BYTE bOpcode)
  * A5	MOVSW	Move word at address DS:(E)SI to address ES:(E)DI
  * A5	MOVSD	Move doubleword at address DS:(E)SI to address ES:(E)DI
  */
-BOOL OPCHndlrMem_MOVS(BYTE bOpcode)
+BOOL OPCHndlrMem_MOVS(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -4976,7 +5940,7 @@ BOOL OPCHndlrMem_MOVS(BYTE bOpcode)
 	WCHAR *pwszPtrStr = NULL;
 	
 	// Determine DI/EDI based on address size attrib
-	if(insCurIns.wPrefixTypes & PREFIX_ADSIZE)
+	if(pstState->insCurIns.wPrefixTypes & PREFIX_ADSIZE)
 	{
 		pwszxDI = awszRegCodes16[REGCODE_DI];
 		pwszxSI = awszRegCodes16[REGCODE_SI];
@@ -4992,22 +5956,22 @@ BOOL OPCHndlrMem_MOVS(BYTE bOpcode)
 		pwszPtrStr = awszPtrStr[PTR_STR_INDEX_BYTE];
 	else if(bOpcode == 0xA5)
 	{
-		if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+		if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 			pwszPtrStr = awszPtrStr[PTR_STR_INDEX_WORD];
 		else
 			pwszPtrStr = awszPtrStr[PTR_STR_INDEX_DWORD];
 	}
 
 	// destination: <ptrStr> es:[(e)di]
-	StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+	StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 						L"%ses:[%s]", pwszPtrStr, pwszxDI);
 
 	// source: <ptrStr> [(e)si]
-	StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+	StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 					L"%s[%s]", pwszPtrStr, pwszxSI);
-	insCurIns.fSrcStrSet = TRUE;
-	insCurIns.fDesStrSet = TRUE;
-	dsNextState = DASM_STATE_DUMP;
+	pstState->insCurIns.fSrcStrSet = TRUE;
+	pstState->insCurIns.fDesStrSet = TRUE;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -5019,7 +5983,7 @@ BOOL OPCHndlrMem_MOVS(BYTE bOpcode)
  * AD	LODSW		Load word at address DS:(E)SI into AX
  * AD	LODSD		Load doubleword at address DS:(E)SI into EAX
  */
-BOOL OPCHndlrMem_LODS(BYTE bOpcode)
+BOOL OPCHndlrMem_LODS(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -5029,7 +5993,7 @@ BOOL OPCHndlrMem_LODS(BYTE bOpcode)
 	WCHAR *pwszPtrStr = NULL;
 	
 	// Determine DI/EDI based on address size attrib
-	if(insCurIns.wPrefixTypes & PREFIX_ADSIZE)
+	if(pstState->insCurIns.wPrefixTypes & PREFIX_ADSIZE)
 		pwszxSI = awszRegCodes16[REGCODE_SI];
 	else
 		pwszxSI = awszRegCodes32[REGCODE_ESI];
@@ -5038,17 +6002,17 @@ BOOL OPCHndlrMem_LODS(BYTE bOpcode)
 		pwszPtrStr = awszPtrStr[PTR_STR_INDEX_BYTE];
 	else if(bOpcode == 0xAD)
 	{
-		if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+		if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 			pwszPtrStr = awszPtrStr[PTR_STR_INDEX_WORD];
 		else
 			pwszPtrStr = awszPtrStr[PTR_STR_INDEX_DWORD];
 	}
 
 	// to print: lods        dword ptr [esi]
-	StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+	StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 					L"%s[%s]", pwszPtrStr, pwszxSI);
-	insCurIns.fSrcStrSet = TRUE;
-	dsNextState = DASM_STATE_DUMP;
+	pstState->insCurIns.fSrcStrSet = TRUE;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -5060,7 +6024,7 @@ BOOL OPCHndlrMem_LODS(BYTE bOpcode)
  * AB STOSW		Store AX at address ES:(E)DI
  * AB STOSD		Store EAX at address ES:(E)DI
  */
-BOOL OPCHndlrMem_STOS(BYTE bOpcode)
+BOOL OPCHndlrMem_STOS(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -5070,7 +6034,7 @@ BOOL OPCHndlrMem_STOS(BYTE bOpcode)
 	WCHAR *pwszPtrStr = NULL;
 	
 	// Determine DI/EDI based on address size attrib
-	if(insCurIns.wPrefixTypes & PREFIX_ADSIZE)
+	if(pstState->insCurIns.wPrefixTypes & PREFIX_ADSIZE)
 		pwszxDI = awszRegCodes16[REGCODE_DI];
 	else
 		pwszxDI = awszRegCodes32[REGCODE_EDI];
@@ -5079,17 +6043,17 @@ BOOL OPCHndlrMem_STOS(BYTE bOpcode)
 		pwszPtrStr = awszPtrStr[PTR_STR_INDEX_BYTE];
 	else if(bOpcode == 0xAB)
 	{
-		if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+		if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 			pwszPtrStr = awszPtrStr[PTR_STR_INDEX_WORD];
 		else
 			pwszPtrStr = awszPtrStr[PTR_STR_INDEX_DWORD];
 	}
 
 	// to print: stos        word ptr es:[edi]
-	StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+	StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 					L"%ses:[%s]", pwszPtrStr, pwszxDI);
-	insCurIns.fSrcStrSet = TRUE;
-	dsNextState = DASM_STATE_DUMP;
+	pstState->insCurIns.fSrcStrSet = TRUE;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -5097,28 +6061,28 @@ BOOL OPCHndlrMem_STOS(BYTE bOpcode)
  * C4 /r	LES r16,m16:16	Load ES:r16 with far pointer from memory
  * C4 /r	LES r32,m16:32	Load ES:r32 with far pointer from memory
  */
-BOOL OPCHndlrMem_LES(BYTE bOpcode)
+BOOL OPCHndlrMem_LES(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 
-	insCurIns.fSpecialInstruction = TRUE;
-	if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 	{
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-		insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+		pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
 	}
 	else
 	{
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_48BIT;
-		insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_48BIT;
+		pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
 	}
 
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -5126,28 +6090,28 @@ BOOL OPCHndlrMem_LES(BYTE bOpcode)
  * C5 /r	LDS r16,m16:16	Load DS:r16 with far pointer from memory
  * C5 /r	LDS r32,m16:32	Load DS:r32 with far pointer from memory
  */
-BOOL OPCHndlrMem_LDS(BYTE bOpcode)
+BOOL OPCHndlrMem_LDS(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 
-	insCurIns.fSpecialInstruction = TRUE;
-	if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 	{
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-		insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+		pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
 	}
 	else
 	{
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_48BIT;
-		insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_48BIT;
+		pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
 	}
 
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -5155,14 +6119,14 @@ BOOL OPCHndlrMem_LDS(BYTE bOpcode)
  * D7 XLAT m8	Set AL to memory byte DS:[(E)BX + unsigned AL]
  * D7 XLATB		Set AL to memory byte DS:[(E)BX + unsigned AL]
  */
-BOOL OPCHndlrMem_XLAT(BYTE bOpcode)
+BOOL OPCHndlrMem_XLAT(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
 	// XLAT m8 is only for documentation purposes in the code
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -5188,7 +6152,7 @@ BOOL OPCHndlrMem_XLAT(BYTE bOpcode)
  * When an immediate value is used as an operand, it is signextended
  * to the length of the first operand.
  */
-BOOL OPCHndlrCC_CMP(BYTE bOpcode)
+BOOL OPCHndlrCC_CMP(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -5199,35 +6163,35 @@ BOOL OPCHndlrCC_CMP(BYTE bOpcode)
 
 		case 0x3c:
 		{
-			insCurIns.bImmType = IMM_8BIT;
+			pstState->insCurIns.bImmType = IMM_8BIT;
 			// Construct the output string
-			StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								awszRegCodes8[REGCODE_AL]);
-			insCurIns.fDesStrSet = TRUE;
-			insCurIns.fImm = TRUE;
-			dsNextState = DASM_STATE_IMM;
+			pstState->insCurIns.fDesStrSet = TRUE;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->dsNextState = DASM_STATE_IMM;
 			break;
 		}
 
 		case 0x3d:
 		{
-			if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 			{
-				insCurIns.bImmType = IMM_16BIT;
+				pstState->insCurIns.bImmType = IMM_16BIT;
 				// Construct the output string
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								awszRegCodes16[REGCODE_AX]);
 			}
 			else
 			{
-				insCurIns.bImmType = IMM_32BIT;
+				pstState->insCurIns.bImmType = IMM_32BIT;
 				// Construct the output string
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								awszRegCodes16[REGCODE_EAX]);
 			}
-			insCurIns.fDesStrSet = TRUE;
-			insCurIns.fImm = TRUE;
-			dsNextState = DASM_STATE_IMM;
+			pstState->insCurIns.fDesStrSet = TRUE;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->dsNextState = DASM_STATE_IMM;
 			break;
 		}
 
@@ -5235,28 +6199,28 @@ BOOL OPCHndlrCC_CMP(BYTE bOpcode)
 		case 0x39:
 		case 0x3a:
 		case 0x3b:
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_R;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		case 0x80:
 		case 0x81:
 		{
-			insCurIns.fImm = TRUE;
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 		}
 
 		case 0x83:
-			insCurIns.fImm = TRUE;
-			insCurIns.bImmType = IMM_8BIT;
-			insCurIns.fImmSignEx = TRUE;
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.bImmType = IMM_8BIT;
+			pstState->insCurIns.fImmSignEx = TRUE;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 	}// switch(bOpcode)
@@ -5268,26 +6232,26 @@ BOOL OPCHndlrCC_CMP(BYTE bOpcode)
  * 62 /r	BOUND r16,m16&16	Check if r16 (array index) is within bounds specified by m16&16
  * 62 /r	BOUND r32,m32&32	Check if r32 (array index) is within bounds specified by m32&32
  */
-BOOL OPCHndlrCC_BOUND(BYTE bOpcode)
+BOOL OPCHndlrCC_BOUND(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	insCurIns.fSpecialInstruction = TRUE;
-	if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 	{
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;	// ptr str selector
-		insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;	// ptr str selector
+		pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
 	}
 	else
 	{
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_64BIT;	// ptr str selector
-		insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_64BIT;	// ptr str selector
+		pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
 	}
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 
 	return TRUE;
 }
@@ -5295,20 +6259,20 @@ BOOL OPCHndlrCC_BOUND(BYTE bOpcode)
 /*	** ARPL **
  * 63 /r	ARPL r/m16,r16	Adjust RPL of r/m16 to not less than RPL of r16
  */
-BOOL OPCHndlrCC_ARPL(BYTE bOpcode)
+BOOL OPCHndlrCC_ARPL(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
-	insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
+	pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 
-	// pByteInCode is already pointing to ModRM byte
+	// pstState->pbCurrentCodePtr is already pointing to ModRM byte
 
 	return TRUE;
 }
@@ -5361,7 +6325,7 @@ BOOL OPCHndlrCC_ARPL(BYTE bOpcode)
  * FF /5 JMP m16:16		Jump far, absolute indirect, address given in m16:16
  * FF /5 JMP m16:32		Jump far, absolute indirect, address given in m16:32
  */
-BOOL OPCHndlrCC_JUMP(BYTE bOpcode)
+BOOL OPCHndlrCC_JUMP(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -5369,18 +6333,18 @@ BOOL OPCHndlrCC_JUMP(BYTE bOpcode)
 
 	if(bOpcode >= OPC_JMP_BEG && bOpcode <= OPC_JMP_END)
 	{
-		insCurIns.fCodeOffset = TRUE;
-		insCurIns.bImmType = IMM_8BIT;
-		dsNextState = DASM_STATE_IMM;
+		pstState->insCurIns.fCodeOffset = TRUE;
+		pstState->insCurIns.bImmType = IMM_8BIT;
+		pstState->dsNextState = DASM_STATE_IMM;
 	}
 	else if(bOpcode >= 0x80 && bOpcode <= 0x8f)	// 2byte opcodes
 	{
-		insCurIns.fCodeOffset = TRUE;
-		if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-			insCurIns.bImmType = IMM_16BIT;
+		pstState->insCurIns.fCodeOffset = TRUE;
+		if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			pstState->insCurIns.bImmType = IMM_16BIT;
 		else
-			insCurIns.bImmType = IMM_32BIT;
-		dsNextState = DASM_STATE_IMM;
+			pstState->insCurIns.bImmType = IMM_32BIT;
+		pstState->dsNextState = DASM_STATE_IMM;
 	}
 	else
 	{
@@ -5388,67 +6352,67 @@ BOOL OPCHndlrCC_JUMP(BYTE bOpcode)
 		{
 			case 0xe3:	// jcxz/jcexz
 			{
-				insCurIns.fCodeOffset = TRUE;
-				if(insCurIns.wPrefixTypes & PREFIX_ADSIZE)
-					StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", L"jcxz");
-				insCurIns.bImmType = IMM_8BIT;
-				dsNextState = DASM_STATE_IMM;
+				pstState->insCurIns.fCodeOffset = TRUE;
+				if(pstState->insCurIns.wPrefixTypes & PREFIX_ADSIZE)
+					StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", L"jcxz");
+				pstState->insCurIns.bImmType = IMM_8BIT;
+				pstState->dsNextState = DASM_STATE_IMM;
 				break;
 			}
 
 			case 0xeb:
-				insCurIns.fCodeOffset = TRUE;
-				insCurIns.bImmType = IMM_8BIT;
-				dsNextState = DASM_STATE_IMM;
+				pstState->insCurIns.fCodeOffset = TRUE;
+				pstState->insCurIns.bImmType = IMM_8BIT;
+				pstState->dsNextState = DASM_STATE_IMM;
 				break;
 			
 			case 0xe9:
-				insCurIns.fCodeOffset = TRUE;
-				if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-					insCurIns.bImmType = IMM_16BIT;
+				pstState->insCurIns.fCodeOffset = TRUE;
+				if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+					pstState->insCurIns.bImmType = IMM_16BIT;
 				else
-					insCurIns.bImmType = IMM_32BIT;
-				dsNextState = DASM_STATE_IMM;
+					pstState->insCurIns.bImmType = IMM_32BIT;
+				pstState->dsNextState = DASM_STATE_IMM;
 				break;
 
 			case 0xea:	// EA cd JMP ptr16:16 or EA cp JMP ptr16:32
 			{
-				insCurIns.fCodeOffset = TRUE;
-				if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-					insCurIns.bImmType = IMM_32BIT;
+				pstState->insCurIns.fCodeOffset = TRUE;
+				if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+					pstState->insCurIns.bImmType = IMM_32BIT;
 				else
-					insCurIns.bImmType = IMM_48BIT;
-				dsNextState = DASM_STATE_IMM;
+					pstState->insCurIns.bImmType = IMM_48BIT;
+				pstState->dsNextState = DASM_STATE_IMM;
 				break;
 			}
 
 			case 0xff:
 			{
 				BYTE bOpcodeEx;
-				Util_vSplitModRMByte(*pByteInCode, NULL, &bOpcodeEx, NULL);
-				insCurIns.fModRM = TRUE;
-				insCurIns.fSpecialInstruction = TRUE;
+				Util_vSplitModRMByte(*pstState->pbCurrentCodePtr, NULL, &bOpcodeEx, NULL);
+				pstState->insCurIns.fModRM = TRUE;
+				pstState->insCurIns.fSpecialInstruction = TRUE;
 				if(bOpcodeEx == 4)
 				{
-					if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-						insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
+					if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+						pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
 					else
-						insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+						pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
 				}
 				else if(bOpcodeEx == 5)
 				{
-					if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-						insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+					if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+						pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
 					else
-						insCurIns.bOperandSizeSrc = OPERANDSIZE_48BIT;
+						pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_48BIT;
 				}
 				else
 				{
 					wprintf_s(L"OPCHndlrCC_JUMP(): Invalid opcode ex %d\n", bOpcodeEx);
 					return FALSE;
 				}
-				insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-				dsNextState = DASM_STATE_MOD_RM;
+				pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+				pstState->dsNextState = DASM_STATE_MOD_RM;
 				break;
 			}
 
@@ -5476,7 +6440,7 @@ BOOL OPCHndlrCC_JUMP(BYTE bOpcode)
  * 85 /r	TEST r/m16,r16	AND r16 with r/m16; set SF, ZF, PF according to result
  * 85 /r	TEST r/m32,r32	AND r32 with r/m32; set SF, ZF, PF according to result
  */
-BOOL OPCHndlrCC_TEST(BYTE bOpcode)
+BOOL OPCHndlrCC_TEST(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -5485,49 +6449,49 @@ BOOL OPCHndlrCC_TEST(BYTE bOpcode)
 	switch(bOpcode)
 	{
 		case 0xa8:
-			insCurIns.fImm = TRUE;
-			insCurIns.bImmType = IMM_8BIT;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.bImmType = IMM_8BIT;
 
 			// Construct the output string
-			StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								awszRegCodes8[REGCODE_AL]);
-			insCurIns.fDesStrSet = TRUE;
-			dsNextState = DASM_STATE_IMM;
+			pstState->insCurIns.fDesStrSet = TRUE;
+			pstState->dsNextState = DASM_STATE_IMM;
 			break;
 
 		case 0xa9:
-			insCurIns.fImm = TRUE;
-			if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			pstState->insCurIns.fImm = TRUE;
+			if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 			{
-				insCurIns.bImmType = IMM_16BIT;
+				pstState->insCurIns.bImmType = IMM_16BIT;
 				// Construct the output string
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								awszRegCodes16[REGCODE_AX]);
 			}
 			else
 			{
-				insCurIns.bImmType = IMM_32BIT;
+				pstState->insCurIns.bImmType = IMM_32BIT;
 				// Construct the output string
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								awszRegCodes32[REGCODE_EAX]);
 			}
-			insCurIns.fDesStrSet = TRUE;
-			dsNextState = DASM_STATE_IMM;
+			pstState->insCurIns.fDesStrSet = TRUE;
+			pstState->dsNextState = DASM_STATE_IMM;
 			break;
 
 		case 0xf6:	// w-bit and op size prefix can determine the operands' size
 		case 0xf7:
-			insCurIns.fModRM = TRUE;
-			insCurIns.fImm = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		case 0x84:	// w-bit and op size prefix can determine the operands' size
 		case 0x85:
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_R;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		default:
@@ -5552,7 +6516,7 @@ BOOL OPCHndlrCC_TEST(BYTE bOpcode)
  * A7 CMPSD				Compares doubleword at address DS:(E)SI with doubleword
  *							at address ES:(E)DI and sets the status flags accordingly
  */
-BOOL OPCHndlrCC_CMPS(BYTE bOpcode)
+BOOL OPCHndlrCC_CMPS(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -5563,7 +6527,7 @@ BOOL OPCHndlrCC_CMPS(BYTE bOpcode)
 	WCHAR *pwszPtrStr = NULL;
 	
 	// Determine DI/EDI based on address size attrib
-	if(insCurIns.wPrefixTypes & PREFIX_ADSIZE)
+	if(pstState->insCurIns.wPrefixTypes & PREFIX_ADSIZE)
 	{
 		pwszxDI = awszRegCodes16[REGCODE_DI];
 		pwszxSI = awszRegCodes16[REGCODE_SI];
@@ -5579,22 +6543,22 @@ BOOL OPCHndlrCC_CMPS(BYTE bOpcode)
 		pwszPtrStr = awszPtrStr[PTR_STR_INDEX_BYTE];
 	else if(bOpcode == 0xA7)
 	{
-		if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+		if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 			pwszPtrStr = awszPtrStr[PTR_STR_INDEX_WORD];
 		else
 			pwszPtrStr = awszPtrStr[PTR_STR_INDEX_DWORD];
 	}
 
 	// destination: <ptrStr>[(e)si]
-	StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+	StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 						L"%s[%s]", pwszPtrStr, pwszxSI);
 
 	// source: <ptrStr> es:[(e)di]
-	StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+	StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 					L"%ses:[%s]", pwszPtrStr, pwszxDI);
-	insCurIns.fSrcStrSet = TRUE;
-	insCurIns.fDesStrSet = TRUE;
-	dsNextState = DASM_STATE_DUMP;
+	pstState->insCurIns.fSrcStrSet = TRUE;
+	pstState->insCurIns.fDesStrSet = TRUE;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -5606,7 +6570,7 @@ BOOL OPCHndlrCC_CMPS(BYTE bOpcode)
  * AF	SCASW		Compare AX with word at ES:(E)DI and set status flags
  * AF	SCASD		Compare EAX with doubleword at ES:(E)DI and set status flags
  */
-BOOL OPCHndlrCC_SCAS(BYTE bOpcode)
+BOOL OPCHndlrCC_SCAS(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -5616,7 +6580,7 @@ BOOL OPCHndlrCC_SCAS(BYTE bOpcode)
 	WCHAR *pwszPtrStr = NULL;
 	
 	// Determine DI/EDI based on address size attrib
-	if(insCurIns.wPrefixTypes & PREFIX_ADSIZE)
+	if(pstState->insCurIns.wPrefixTypes & PREFIX_ADSIZE)
 		pwszxDI = awszRegCodes16[REGCODE_DI];
 	else
 		pwszxDI = awszRegCodes32[REGCODE_EDI];
@@ -5625,17 +6589,17 @@ BOOL OPCHndlrCC_SCAS(BYTE bOpcode)
 		pwszPtrStr = awszPtrStr[PTR_STR_INDEX_BYTE];
 	else if(bOpcode == 0xAF)
 	{
-		if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+		if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 			pwszPtrStr = awszPtrStr[PTR_STR_INDEX_WORD];
 		else
 			pwszPtrStr = awszPtrStr[PTR_STR_INDEX_DWORD];
 	}
 
 	// to print: scas   dword ptr es:[edi]
-	StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+	StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 					L"%ses:[%s]", pwszPtrStr, pwszxDI);
-	insCurIns.fSrcStrSet = TRUE;
-	dsNextState = DASM_STATE_DUMP;
+	pstState->insCurIns.fSrcStrSet = TRUE;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -5645,7 +6609,7 @@ BOOL OPCHndlrCC_SCAS(BYTE bOpcode)
  * C2 iw	RET imm16	Near return to calling procedure and pop imm16 bytes from stack
  * CA iw	RET imm16	Far return to calling procedure and pop imm16 bytes from stack
  */
-BOOL OPCHndlrCC_RETN(BYTE bOpcode)
+BOOL OPCHndlrCC_RETN(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -5653,13 +6617,13 @@ BOOL OPCHndlrCC_RETN(BYTE bOpcode)
 
 	if(bOpcode == 0xc3 || bOpcode == 0xcb)
 	{
-		dsNextState = DASM_STATE_DUMP;
+		pstState->dsNextState = DASM_STATE_DUMP;
 	}
 	else if(bOpcode == 0xc2 || bOpcode == 0xca)
 	{
-		insCurIns.fImm = TRUE;
-		insCurIns.bImmType = IMM_16BIT;
-		dsNextState = DASM_STATE_IMM;
+		pstState->insCurIns.fImm = TRUE;
+		pstState->insCurIns.bImmType = IMM_16BIT;
+		pstState->dsNextState = DASM_STATE_IMM;
 	}
 	else
 	{
@@ -5670,7 +6634,7 @@ BOOL OPCHndlrCC_RETN(BYTE bOpcode)
 }
 
 
-BOOL OPCHndlrCC_IRETD(BYTE bOpcode)
+BOOL OPCHndlrCC_IRETD(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -5678,11 +6642,11 @@ BOOL OPCHndlrCC_IRETD(BYTE bOpcode)
 
 	// "iret" if opsize = 16bit
 	// else, "iretd" is already written to 
-	// wszCurInsStr
-	if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-		StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"iret");
+	// pstState->wszCurInsStr
+	if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+		StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"iret");
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -5693,16 +6657,16 @@ BOOL OPCHndlrCC_IRETD(BYTE bOpcode)
  * E0 cb	LOOPNE rel8		Decrement count; jump short if count != 0 and ZF=0
  * E0 cb	LOOPNZ rel8		Decrement count; jump short if count != 0 and ZF=0
  */
-BOOL OPCHndlrCC_CLOOP(BYTE bOpcode)
+BOOL OPCHndlrCC_CLOOP(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
 	// Offset handled in IMM state
-	insCurIns.fCodeOffset = TRUE;
-	insCurIns.bImmType = IMM_8BIT;
-	dsNextState = DASM_STATE_IMM;
+	pstState->insCurIns.fCodeOffset = TRUE;
+	pstState->insCurIns.bImmType = IMM_8BIT;
+	pstState->dsNextState = DASM_STATE_IMM;
 
 	return TRUE;
 }
@@ -5718,7 +6682,7 @@ BOOL OPCHndlrCC_CLOOP(BYTE bOpcode)
  * FF /3	CALL m16:16		Call far, absolute indirect, address given in m16:16
  * FF /3	CALL m16:32		Call far, absolute indirect, address given in m16:32
  */
-BOOL OPCHndlrCC_CALL(BYTE bOpcode)
+BOOL OPCHndlrCC_CALL(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -5730,37 +6694,37 @@ BOOL OPCHndlrCC_CALL(BYTE bOpcode)
 	{
 
 		case 0xe8:
-			if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 			{
 				// rel16
 				// Handled in IMM state
-				insCurIns.bImmType = IMM_16BIT;
+				pstState->insCurIns.bImmType = IMM_16BIT;
 			}
 			else
 			{
 				// rel32
-				insCurIns.bImmType = IMM_32BIT;
+				pstState->insCurIns.bImmType = IMM_32BIT;
 			}
-			insCurIns.fCodeOffset = TRUE;
-			dsNextState = DASM_STATE_IMM;
+			pstState->insCurIns.fCodeOffset = TRUE;
+			pstState->dsNextState = DASM_STATE_IMM;
 			break;
 
 		case 0x9a:	// CALLF
-			if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 			{
 				// ptr 16bit, offset 16bit
 				WORD wPtr;
 				short sOffset;
 
-				wPtr = *((WORD*)pByteInCode);
-				pByteInCode += sizeof(WORD);
+				wPtr = *((WORD*)pstState->pbCurrentCodePtr);
+				pstState->pbCurrentCodePtr += sizeof(WORD);
 				
-				sOffset = *((short*)pByteInCode);
-				pByteInCode += sizeof(short);
+				sOffset = *((short*)pstState->pbCurrentCodePtr);
+				pstState->pbCurrentCodePtr += sizeof(short);
 
-				StringCchPrintf(wszCurInsTempStr, _countof(wszCurInsTempStr), 
+				StringCchPrintf(pstState->wszCurInsTempStr, _countof(pstState->wszCurInsTempStr), 
 								L"word ptr [%04xh]:%04xh", wPtr, sOffset);
-				iError = wcscat_s(wszCurInsStr, _countof(wszCurInsStr), wszCurInsTempStr);
+				iError = wcscat_s(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), pstState->wszCurInsTempStr);
 				#ifdef _DEBUG
 					if(iError)
 						wprintf_s(L"OPCHndlrCC_CALL(): 3 wcscat_s() error %d\n", iError);
@@ -5773,47 +6737,47 @@ BOOL OPCHndlrCC_CALL(BYTE bOpcode)
 				WORD wPtr;
 				INT iOffset;
 
-				wPtr = *((WORD*)pByteInCode);
-				pByteInCode += sizeof(WORD);
+				wPtr = *((WORD*)pstState->pbCurrentCodePtr);
+				pstState->pbCurrentCodePtr += sizeof(WORD);
 				
-				iOffset = *((INT*)pByteInCode);
-				pByteInCode += sizeof(INT);
+				iOffset = *((INT*)pstState->pbCurrentCodePtr);
+				pstState->pbCurrentCodePtr += sizeof(INT);
 
-				StringCchPrintf(wszCurInsTempStr, _countof(wszCurInsTempStr), 
+				StringCchPrintf(pstState->wszCurInsTempStr, _countof(pstState->wszCurInsTempStr), 
 								L"word ptr [%04xh]:%08xh", wPtr, iOffset);
-				iError = wcscat_s(wszCurInsStr, _countof(wszCurInsStr), wszCurInsTempStr);
+				iError = wcscat_s(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), pstState->wszCurInsTempStr);
 				#ifdef _DEBUG
 					if(iError)
 						wprintf_s(L"OPCHndlrCC_CALL(): 3 wcscat_s() error %d\n", iError);
 				#endif
 			}
 
-			dsNextState = DASM_STATE_DUMP;
+			pstState->dsNextState = DASM_STATE_DUMP;
 			break;
 
 		case 0xff:
 			BYTE bReg;
 			
 			// Determine whether it is FF /2 or FF /3 call
-			Util_vSplitModRMByte(*pByteInCode, NULL, &bReg, NULL);
+			Util_vSplitModRMByte(*pstState->pbCurrentCodePtr, NULL, &bReg, NULL);
 			if(bReg == 2)
 			{
 				// CALL r/m16 or CALL r/m32
-				insCurIns.fModRM = TRUE;
-				insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-				dsNextState = DASM_STATE_MOD_RM;
+				pstState->insCurIns.fModRM = TRUE;
+				pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+				pstState->dsNextState = DASM_STATE_MOD_RM;
 			}
 			else if(bReg == 3)
 			{
 				// CALL m16:16 or CALL m16:32
-				insCurIns.fSpecialInstruction = TRUE;
-				if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-					insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				pstState->insCurIns.fSpecialInstruction = TRUE;
+				if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+					pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
 				else
-					insCurIns.bOperandSizeSrc = OPERANDSIZE_48BIT;
-				insCurIns.fModRM = TRUE;
-				insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-				dsNextState = DASM_STATE_MOD_RM;
+					pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_48BIT;
+				pstState->insCurIns.fModRM = TRUE;
+				pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+				pstState->dsNextState = DASM_STATE_MOD_RM;
 			}
 			else
 			{
@@ -5842,13 +6806,13 @@ BOOL OPCHndlrCC_CALL(BYTE bOpcode)
  * FB	STI		Set interrupt flag; external, maskable interrupts enabled
  *				at the end of the next instruction
  */
-BOOL OPCHndlrCC_EFLAGS(BYTE bOpcode)	// EFLAGS manipulators: CMC, CLC, STC, ...
+BOOL OPCHndlrCC_EFLAGS(PDASMSTATE pstState, BYTE bOpcode)	// EFLAGS manipulators: CMC, CLC, STC, ...
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -5863,7 +6827,7 @@ BOOL OPCHndlrCC_EFLAGS(BYTE bOpcode)	// EFLAGS manipulators: CMC, CLC, STC, ...
  * 6D INSW	Input word from I/O port specified in DX into memory location specified in ES:(E)DI
  * 6D INSD	Input doubleword from I/O port specified in DX into memory location specified in ES:(E)DI
  */
-BOOL OPCHndlrSysIO_INS(BYTE bOpcode)
+BOOL OPCHndlrSysIO_INS(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -5874,7 +6838,7 @@ BOOL OPCHndlrSysIO_INS(BYTE bOpcode)
 	WCHAR *pwszxDI = NULL;
 	
 	// Determine DI/EDI based on address size attrib
-	if(insCurIns.wPrefixTypes & PREFIX_ADSIZE)
+	if(pstState->insCurIns.wPrefixTypes & PREFIX_ADSIZE)
 		pwszxDI = awszRegCodes16[REGCODE_DI];
 	else
 		pwszxDI = awszRegCodes32[REGCODE_EDI];
@@ -5882,31 +6846,31 @@ BOOL OPCHndlrSysIO_INS(BYTE bOpcode)
 	if(bOpcode == 0x6C)
 	{
 		// byte ptr es:[(e)di]
-		StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+		StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 						L"%ses:[%s]", awszPtrStr[PTR_STR_INDEX_BYTE], pwszxDI);
 	}
 	else if(bOpcode == 0x6D)
 	{
-		if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+		if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 		{
 			// word ptr es:[(e)di]
-			StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 							L"%ses:[%s]", awszPtrStr[PTR_STR_INDEX_WORD], pwszxDI);
 		}
 		else
 		{
 			// dword ptr es:[(e)di]
-			StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 							L"%ses:[%s]", awszPtrStr[PTR_STR_INDEX_DWORD], pwszxDI);
 		}
 	}
 
 	// source is always dx: port address is in dx
-	StringCchCopy(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc), 
+	StringCchCopy(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc), 
 					awszRegCodes16[REGCODE_DX]);
-	insCurIns.fSrcStrSet = TRUE;
-	insCurIns.fDesStrSet = TRUE;
-	dsNextState = DASM_STATE_DUMP;
+	pstState->insCurIns.fSrcStrSet = TRUE;
+	pstState->insCurIns.fDesStrSet = TRUE;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -5916,7 +6880,7 @@ BOOL OPCHndlrSysIO_INS(BYTE bOpcode)
  * 6F	OUTS DX, m16	Output word from memory location specified in DS:(E)SI to I/O port specified in DX
  * 6F	OUTS DX, m32	Output doubleword from memory location specified in DS:(E)SI to I/O port specified in DX
  */
-BOOL OPCHndlrSysIO_OUTS(BYTE bOpcode)
+BOOL OPCHndlrSysIO_OUTS(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -5925,7 +6889,7 @@ BOOL OPCHndlrSysIO_OUTS(BYTE bOpcode)
 	WCHAR *pwszxDI = NULL;
 	
 	// Determine DI/EDI based on address size attrib
-	if(insCurIns.wPrefixTypes & PREFIX_ADSIZE)
+	if(pstState->insCurIns.wPrefixTypes & PREFIX_ADSIZE)
 		pwszxDI = awszRegCodes16[REGCODE_DI];
 	else
 		pwszxDI = awszRegCodes32[REGCODE_EDI];
@@ -5933,31 +6897,31 @@ BOOL OPCHndlrSysIO_OUTS(BYTE bOpcode)
 	if(bOpcode == 0x6E)
 	{
 		// byte ptr ds:[(e)di]
-		StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+		StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 						L"%sds:[%s]", awszPtrStr[PTR_STR_INDEX_BYTE], pwszxDI);
 	}
 	else if(bOpcode == 0x6F)
 	{
-		if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+		if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 		{
 			// word ptr ds:[(e)di]
-			StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 							L"%sds:[%s]", awszPtrStr[PTR_STR_INDEX_WORD], pwszxDI);
 		}
 		else
 		{
 			// dword ptr ds:[(e)di]
-			StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 							L"%sds:[%s]", awszPtrStr[PTR_STR_INDEX_DWORD], pwszxDI);
 		}
 	}
 
 	// destination is always dx: port address is in dx
-	StringCchCopy(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes), 
+	StringCchCopy(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes), 
 					awszRegCodes16[REGCODE_DX]);
-	insCurIns.fSrcStrSet = TRUE;
-	insCurIns.fDesStrSet = TRUE;
-	dsNextState = DASM_STATE_DUMP;
+	pstState->insCurIns.fSrcStrSet = TRUE;
+	pstState->insCurIns.fDesStrSet = TRUE;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -5965,13 +6929,13 @@ BOOL OPCHndlrSysIO_OUTS(BYTE bOpcode)
  * 9B	WAIT	Check pending unmasked floating-point exceptions.
  * FWAIT is an alternate mnemonic.
  */
-BOOL OPCHndlrSysIO_WAIT(BYTE bOpcode)
+BOOL OPCHndlrSysIO_WAIT(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -5981,7 +6945,7 @@ BOOL OPCHndlrSysIO_WAIT(BYTE bOpcode)
  * CE		intO		Interrupt 4—if overflow flag is 1
  */
 
-BOOL OPCHndlrSysIO_INT(BYTE bOpcode)	//	int3/intn/intO
+BOOL OPCHndlrSysIO_INT(PDASMSTATE pstState, BYTE bOpcode)	//	int3/intn/intO
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -5989,21 +6953,21 @@ BOOL OPCHndlrSysIO_INT(BYTE bOpcode)	//	int3/intn/intO
 
 	if(bOpcode == 0xcc)
 	{
-		StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"int");
-		StringCchPrintf(insCurIns.wszCurInsStrSrc, 
-							_countof(insCurIns.wszCurInsStrSrc), L"3");
-		insCurIns.fSrcStrSet = TRUE;
-		dsNextState = DASM_STATE_DUMP;
+		StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"int");
+		StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, 
+							_countof(pstState->insCurIns.wszCurInsStrSrc), L"3");
+		pstState->insCurIns.fSrcStrSet = TRUE;
+		pstState->dsNextState = DASM_STATE_DUMP;
 	}
 	else if(bOpcode == 0xcd)
 	{
-		insCurIns.fImm = TRUE;
-		insCurIns.bImmType = IMM_8BIT;
-		dsNextState = DASM_STATE_IMM;
+		pstState->insCurIns.fImm = TRUE;
+		pstState->insCurIns.bImmType = IMM_8BIT;
+		pstState->dsNextState = DASM_STATE_IMM;
 	}
 	else if(bOpcode == 0xce)
 	{
-		dsNextState = DASM_STATE_DUMP;
+		pstState->dsNextState = DASM_STATE_DUMP;
 	}
 	else
 	{
@@ -6014,13 +6978,13 @@ BOOL OPCHndlrSysIO_INT(BYTE bOpcode)	//	int3/intn/intO
 	return TRUE;
 }
 
-BOOL OPCHndlrSysIO_IceBP(BYTE bOpcode)	// undocumented INT1
+BOOL OPCHndlrSysIO_IceBP(PDASMSTATE pstState, BYTE bOpcode)	// undocumented INT1
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 
 	return TRUE;
 }
@@ -6031,7 +6995,7 @@ BOOL OPCHndlrSysIO_IceBP(BYTE bOpcode)	// undocumented INT1
  * E5 ib	IN AX,imm8		Input byte from imm8 I/O port address into AX
  * E5 ib	IN EAX,imm8		Input byte from imm8 I/O port address into EAX
  */
-BOOL OPCHndlrSysIO_IN(BYTE bOpcode)	// IN imm
+BOOL OPCHndlrSysIO_IN(PDASMSTATE pstState, BYTE bOpcode)	// IN imm
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -6040,16 +7004,16 @@ BOOL OPCHndlrSysIO_IN(BYTE bOpcode)	// IN imm
 	// w, opsize attrib
 	if(bOpcode == 0xE4)
 	{
-		StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+		StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 							awszRegCodes8[REGCODE_AL]);
 	}
 	else if(bOpcode == 0xE5)
 	{
-		 if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-			StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+		 if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								awszRegCodes8[REGCODE_AX]);
 		else
-			StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								awszRegCodes8[REGCODE_EAX]);
 	}
 	else
@@ -6057,10 +7021,10 @@ BOOL OPCHndlrSysIO_IN(BYTE bOpcode)	// IN imm
 		wprintf_s(L"OPCHndlrSysIO_IN(): Invalid opcode %xh\n", bOpcode);
 		return FALSE;
 	}
-	insCurIns.fDesStrSet = TRUE;
-	insCurIns.fImm = TRUE;
-	insCurIns.bImmType = IMM_8BIT;
-	dsNextState = DASM_STATE_IMM;
+	pstState->insCurIns.fDesStrSet = TRUE;
+	pstState->insCurIns.fImm = TRUE;
+	pstState->insCurIns.bImmType = IMM_8BIT;
+	pstState->dsNextState = DASM_STATE_IMM;
 	return TRUE;
 }
 
@@ -6069,7 +7033,7 @@ BOOL OPCHndlrSysIO_IN(BYTE bOpcode)	// IN imm
  * E7 ib	OUT imm8, AX	Output word in AX to I/O port address imm8
  * E7 ib	OUT imm8, EAX	Output doubleword in EAX to I/O port address imm8
  */
-BOOL OPCHndlrSysIO_OUT(BYTE bOpcode)	// OUT imm
+BOOL OPCHndlrSysIO_OUT(PDASMSTATE pstState, BYTE bOpcode)	// OUT imm
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -6080,16 +7044,16 @@ BOOL OPCHndlrSysIO_OUT(BYTE bOpcode)	// OUT imm
 	// w, opsize attrib
 	if(bOpcode == 0xE6)
 	{
-		StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+		StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 							awszRegCodes8[REGCODE_AL]);
 	}
 	else if(bOpcode == 0xE7)
 	{
-		 if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-			StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+		 if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 								awszRegCodes8[REGCODE_AX]);
 		else
-			StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 								awszRegCodes8[REGCODE_EAX]);
 	}
 	else
@@ -6097,18 +7061,18 @@ BOOL OPCHndlrSysIO_OUT(BYTE bOpcode)	// OUT imm
 		wprintf_s(L"OPCHndlrSysIO_OUT(): Invalid opcode %xh\n", bOpcode);
 		return FALSE;
 	}
-	insCurIns.fSrcStrSet = TRUE;
+	pstState->insCurIns.fSrcStrSet = TRUE;
 	
 	// The imm8 value is the source!
 	// This is not handled in either IMM or DUMP state
 	// so we will do it here instead
-	bPortAddr = *pByteInCode;
-	++pByteInCode;
-	++nBytesCurIns;
-	StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+	bPortAddr = *pstState->pbCurrentCodePtr;
+	++pstState->pbCurrentCodePtr;
+	++pstState->nBytesCurIns;
+	StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 					L"%Xh", bPortAddr);
-	insCurIns.fDesStrSet = TRUE;
-	dsNextState = DASM_STATE_DUMP;
+	pstState->insCurIns.fDesStrSet = TRUE;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -6118,7 +7082,7 @@ BOOL OPCHndlrSysIO_OUT(BYTE bOpcode)	// OUT imm
  * ED	IN AX,DX	Input word from I/O port in DX into AX
  * ED	IN EAX,DX	Input doubleword from I/O port in DX into EAX
  */
-BOOL OPCHndlrSysIO_INDX(BYTE bOpcode)
+BOOL OPCHndlrSysIO_INDX(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -6127,16 +7091,16 @@ BOOL OPCHndlrSysIO_INDX(BYTE bOpcode)
 	// w, opsize attrib
 	if(bOpcode == 0xEC)
 	{
-		StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+		StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 							awszRegCodes8[REGCODE_AL]);
 	}
 	else if(bOpcode == 0xED)
 	{
-		 if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-			StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+		 if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								awszRegCodes8[REGCODE_AX]);
 		else
-			StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								awszRegCodes8[REGCODE_EAX]);
 	}
 	else
@@ -6146,11 +7110,11 @@ BOOL OPCHndlrSysIO_INDX(BYTE bOpcode)
 	}
 
 	// source is always DX: port address is in DX
-	StringCchCopy(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+	StringCchCopy(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 						awszRegCodes16[REGCODE_DX]);
-	insCurIns.fDesStrSet = TRUE;
-	insCurIns.fSrcStrSet = TRUE;
-	dsNextState = DASM_STATE_DUMP;
+	pstState->insCurIns.fDesStrSet = TRUE;
+	pstState->insCurIns.fSrcStrSet = TRUE;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -6159,7 +7123,7 @@ BOOL OPCHndlrSysIO_INDX(BYTE bOpcode)
  * EF	OUT DX, AX	Output word in AX to I/O port address in DX
  * EF	OUT DX, EAX	Output doubleword in EAX to I/O port address in DX
  */
-BOOL OPCHndlrSysIO_OUTDX(BYTE bOpcode)
+BOOL OPCHndlrSysIO_OUTDX(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -6168,16 +7132,16 @@ BOOL OPCHndlrSysIO_OUTDX(BYTE bOpcode)
 	// w, opsize attrib
 	if(bOpcode == 0xEE)
 	{
-		StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+		StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 							awszRegCodes8[REGCODE_AL]);
 	}
 	else if(bOpcode == 0xEF)
 	{
-		 if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-			StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+		 if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 								awszRegCodes16[REGCODE_AX]);
 		else
-			StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 								awszRegCodes32[REGCODE_EAX]);
 	}
 	else
@@ -6187,27 +7151,27 @@ BOOL OPCHndlrSysIO_OUTDX(BYTE bOpcode)
 	}
 	
 	// Dest is always DX: port address is in DX
-	StringCchCopy(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+	StringCchCopy(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 					awszRegCodes16[REGCODE_DX]);
-	insCurIns.fDesStrSet = TRUE;
-	insCurIns.fSrcStrSet = TRUE;
-	dsNextState = DASM_STATE_DUMP;
+	pstState->insCurIns.fDesStrSet = TRUE;
+	pstState->insCurIns.fSrcStrSet = TRUE;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
-BOOL OPCHndlrSysIO_HLT(BYTE bOpcode)
+BOOL OPCHndlrSysIO_HLT(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 
 // Prefix handlers
-BOOL OPCHndlrPrefix_Ovride(BYTE bOpcode)	// override prefixes
+BOOL OPCHndlrPrefix_Ovride(PDASMSTATE pstState, BYTE bOpcode)	// override prefixes
 {
 	// This function need not be called since prefixes are handled in 
 	// PREFIX state
@@ -6222,7 +7186,7 @@ BOOL OPCHndlrPrefix_Ovride(BYTE bOpcode)	// override prefixes
 /*	** LOCK **
  * F0	LOCK	Asserts LOCK# signal for duration of the accompanying instruction
  */
-BOOL OPCHndlrPrefix_LOCK(BYTE bOpcode)
+BOOL OPCHndlrPrefix_LOCK(PDASMSTATE pstState, BYTE bOpcode)
 {
 	// This function need not be called since prefixes are handled in 
 	// PREFIX state
@@ -6232,7 +7196,7 @@ BOOL OPCHndlrPrefix_LOCK(BYTE bOpcode)
 	return TRUE;
 }
 
-BOOL OPCHndlrPrefix_CREP(BYTE bOpcode)	// conditional repetition: REPE/REPNE
+BOOL OPCHndlrPrefix_CREP(PDASMSTATE pstState, BYTE bOpcode)	// conditional repetition: REPE/REPNE
 {
 	// This function need not be called since prefixes are handled in 
 	// PREFIX state
@@ -6240,7 +7204,7 @@ BOOL OPCHndlrPrefix_CREP(BYTE bOpcode)	// conditional repetition: REPE/REPNE
 		wprintf_s(L"!! %s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -6257,7 +7221,7 @@ BOOL OPCHndlrPrefix_CREP(BYTE bOpcode)	// conditional repetition: REPE/REPNE
  * XOR	/6
  * CMP	/7
  */
-BOOL OPCHndlrMulti_8x(BYTE bOpcode)		// 0x80 - 0x83
+BOOL OPCHndlrMulti_8x(PDASMSTATE pstState, BYTE bOpcode)		// 0x80 - 0x83
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -6270,41 +7234,41 @@ BOOL OPCHndlrMulti_8x(BYTE bOpcode)		// 0x80 - 0x83
 	static WCHAR awszMnemonics[][MAX_OPCODE_NAME_LEN+1] = {
 					L"add",	L"or",	L"adc",	L"sbb", L"and", L"sub", L"xor", L"cmp" };
 
-	Util_vSplitModRMByte(*pByteInCode, NULL, &bOpcodeEx, NULL);
+	Util_vSplitModRMByte(*pstState->pbCurrentCodePtr, NULL, &bOpcodeEx, NULL);
 
 	switch(bOpcodeEx)
 	{
 		case 0:	// add
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[0]);
-			return OPCHndlrALU_ADD(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[0]);
+			return OPCHndlrALU_ADD(pstState, bOpcode);
 
 		case 2:	// adc
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[2]);
-			return OPCHndlrALU_ADD(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[2]);
+			return OPCHndlrALU_ADD(pstState, bOpcode);
 		
 		case 3:	// sbb
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[3]);
-			return OPCHndlrALU_SUB(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[3]);
+			return OPCHndlrALU_SUB(pstState, bOpcode);
 
 		case 5:	// sub
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[5]);
-			return OPCHndlrALU_SUB(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[5]);
+			return OPCHndlrALU_SUB(pstState, bOpcode);
 			
 		case 1:	// or
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[1]);
-			return OPCHndlrALU_OR(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[1]);
+			return OPCHndlrALU_OR(pstState, bOpcode);
 			
 		case 4:	// and
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[4]);
-			return OPCHndlrALU_AND(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[4]);
+			return OPCHndlrALU_AND(pstState, bOpcode);
 
 		case 6:	// xor
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[6]);
-			return OPCHndlrALU_XOR(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[6]);
+			return OPCHndlrALU_XOR(pstState, bOpcode);
 
 		case 7:	// cmp
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[7]);
-			return OPCHndlrCC_CMP(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[7]);
+			return OPCHndlrCC_CMP(pstState, bOpcode);
 
 		default:
 			wprintf_s(L"OPCHndlrMulti_8x(): Invalid opcode extension %u\n", bOpcodeEx);
@@ -6344,7 +7308,7 @@ BOOL OPCHndlrMulti_8x(BYTE bOpcode)		// 0x80 - 0x83
  * F7 /0 iw		TEST r/m16,imm16
  * F7 /0 id		TEST r/m32,imm32
  */
-BOOL OPCHndlrMulti_fx(BYTE bOpcode)		// 0xf6 and 0xf7
+BOOL OPCHndlrMulti_fx(PDASMSTATE pstState, BYTE bOpcode)		// 0xf6 and 0xf7
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -6357,37 +7321,37 @@ BOOL OPCHndlrMulti_fx(BYTE bOpcode)		// 0xf6 and 0xf7
 	static WCHAR awszMnemonics[][MAX_OPCODE_NAME_LEN+1] = {
 					L"test", L"", L"not", L"neg", L"mul", L"imul", L"div", L"idiv" };
 
-	Util_vSplitModRMByte(*pByteInCode, NULL, &bOpcodeEx, NULL);
+	Util_vSplitModRMByte(*pstState->pbCurrentCodePtr, NULL, &bOpcodeEx, NULL);
 
 	switch(bOpcodeEx)
 	{
 		case 0:
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[0]);
-			return OPCHndlrCC_TEST(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[0]);
+			return OPCHndlrCC_TEST(pstState, bOpcode);
 
 		case 2:
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[2]);
-			return OPCHndlrALU_NOT(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[2]);
+			return OPCHndlrALU_NOT(pstState, bOpcode);
 
 		case 3:
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[3]);
-			return OPCHndlrALU_NEG(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[3]);
+			return OPCHndlrALU_NEG(pstState, bOpcode);
 
 		case 4:
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[4]);
-			return OPCHndlrALU_MUL(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[4]);
+			return OPCHndlrALU_MUL(pstState, bOpcode);
 
 		case 5:
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[5]);
-			return OPCHndlrALU_MUL(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[5]);
+			return OPCHndlrALU_MUL(pstState, bOpcode);
 
 		case 6:
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[6]);
-			return OPCHndlrALU_DIV(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[6]);
+			return OPCHndlrALU_DIV(pstState, bOpcode);
 
 		case 7:
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[7]);
-			return OPCHndlrALU_DIV(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[7]);
+			return OPCHndlrALU_DIV(pstState, bOpcode);
 
 		default:
 			wprintf_s(L"OPCHndlrMulti_fx(): Invalid opcode extension %u\n", bOpcodeEx);
@@ -6403,7 +7367,7 @@ BOOL OPCHndlrMulti_fx(BYTE bOpcode)		// 0xf6 and 0xf7
  *	** DEC **
  * FE /1	DEC r/m8
  */
-BOOL OPCHndlrMulti_IncDec(BYTE bOpcode)	// 0xfe: INC/DEC
+BOOL OPCHndlrMulti_IncDec(PDASMSTATE pstState, BYTE bOpcode)	// 0xfe: INC/DEC
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -6413,17 +7377,17 @@ BOOL OPCHndlrMulti_IncDec(BYTE bOpcode)	// 0xfe: INC/DEC
 	// This is the extension to the primary opcode.
 	BYTE bOpcodeEx;
 
-	Util_vSplitModRMByte(*pByteInCode, NULL, &bOpcodeEx, NULL);
+	Util_vSplitModRMByte(*pstState->pbCurrentCodePtr, NULL, &bOpcodeEx, NULL);
 	
 	if(bOpcodeEx == 0)
 	{
-		StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", L"inc");
-		return OPCHndlrALU_INC(bOpcode);
+		StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", L"inc");
+		return OPCHndlrALU_INC(pstState, bOpcode);
 	}
 	else if(bOpcodeEx == 1)
 	{
-		StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", L"dec");
-		return OPCHndlrALU_DEC(bOpcode);
+		StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", L"dec");
+		return OPCHndlrALU_DEC(pstState, bOpcode);
 	}
 	else
 	{
@@ -6455,7 +7419,7 @@ BOOL OPCHndlrMulti_IncDec(BYTE bOpcode)	// 0xfe: INC/DEC
  * FF /6	PUSH r/m16
  * FF /6	PUSH r/m32
  */
-BOOL OPCHndlrMulti_FF(BYTE bOpcode)		// 0xff
+BOOL OPCHndlrMulti_FF(PDASMSTATE pstState, BYTE bOpcode)		// 0xff
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -6468,31 +7432,31 @@ BOOL OPCHndlrMulti_FF(BYTE bOpcode)		// 0xff
 	static WCHAR awszMnemonics[][MAX_OPCODE_NAME_LEN+1] = {
 					L"inc", L"dec", L"call", L"call", L"jmp", L"jmp", L"push" };
 
-	Util_vSplitModRMByte(*pByteInCode, NULL, &bOpcodeEx, NULL);
+	Util_vSplitModRMByte(*pstState->pbCurrentCodePtr, NULL, &bOpcodeEx, NULL);
 
 	switch(bOpcodeEx)
 	{
 		case 0:
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[0]);
-			return OPCHndlrALU_INC(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[0]);
+			return OPCHndlrALU_INC(pstState, bOpcode);
 
 		case 1:
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[1]);
-			return OPCHndlrALU_DEC(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[1]);
+			return OPCHndlrALU_DEC(pstState, bOpcode);
 
 		case 2:
 		case 3:
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[3]);
-			return OPCHndlrCC_CALL(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[3]);
+			return OPCHndlrCC_CALL(pstState, bOpcode);
 
 		case 4:
 		case 5:
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[5]);
-			return OPCHndlrCC_JUMP(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[5]);
+			return OPCHndlrCC_JUMP(pstState, bOpcode);
 
 		case 6:
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[6]);
-			return OPCHndlrStack_PUSH(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[6]);
+			return OPCHndlrStack_PUSH(pstState, bOpcode);
 
 		default:
 			wprintf_s(L"OPCHndlrMulti_FF(): Invalid opcode extension %u\n", bOpcodeEx);
@@ -6507,12 +7471,12 @@ BOOL OPCHndlrMulti_FF(BYTE bOpcode)		// 0xff
  * 90	NOP
  * The NOP instruction is an alias mnemonic for the XCHG (E)AX, (E)AX instruction.
  */
-BOOL OPCHndlr_NOP(BYTE bOpcode)
+BOOL OPCHndlr_NOP(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -6520,7 +7484,7 @@ BOOL OPCHndlr_NOP(BYTE bOpcode)
  * 0F 1F /0 NOP r/m16 Multi-byte no-operation instruction.
  * 0F 1F /0 NOP r/m32 Multi-byte no-operation instruction.
  */
-BOOL OPCHndlr_HNOP(BYTE bOpcode)
+BOOL OPCHndlr_HNOP(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -6528,31 +7492,31 @@ BOOL OPCHndlr_HNOP(BYTE bOpcode)
 
 	// Check if 'reg' is 0??
 
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-	insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+	pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
 
 // Instruction I don't know yet
-BOOL OPCHndlrUnKwn_SALC(BYTE bOpcode)
+BOOL OPCHndlrUnKwn_SALC(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"OPCHndlrUnKwn_SALC(): %xh\n", bOpcode);
 	#endif
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
-BOOL OPCHndlrUnKwn_ICE(BYTE bOpcode)	// ?? SysIO
+BOOL OPCHndlrUnKwn_ICE(PDASMSTATE pstState, BYTE bOpcode)	// ?? SysIO
 {
 	#ifdef _DEBUG
 		wprintf_s(L"OPCHndlrUnKwn_ICE(): %xh\n", bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -6571,10 +7535,10 @@ BOOL OPCHndlrUnKwn_ICE(BYTE bOpcode)	// ?? SysIO
  * DA /0	FIADD m32int		Add m32int to ST(0) and store result in ST(0)
  * DE /0	FIADD m16int		Add m16int to ST(0) and store result in ST(0)
  */
-BOOL OPCHndlrFPU_FADD(BYTE bOpcode)	// FADDP/FIADD also
+BOOL OPCHndlrFPU_FADD(PDASMSTATE pstState, BYTE bOpcode)	// FADDP/FIADD also
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
@@ -6588,79 +7552,79 @@ BOOL OPCHndlrFPU_FADD(BYTE bOpcode)	// FADDP/FIADD also
 	{
 		case 0xD8:
 		{
-			if(bFPUModRM >= 0xC0 && bFPUModRM <= 0xC7)	// D8 C0+i
+			if(pstState->bFPUModRM >= 0xC0 && pstState->bFPUModRM <= 0xC7)	// D8 C0+i
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
-								L"st(%d)", bFPUModRM - 0xC0);
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
+								L"st(%d)", pstState->bFPUModRM - 0xC0);
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								L"st");
-				insCurIns.fSrcStrSet = TRUE;
-				insCurIns.fDesStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->insCurIns.fDesStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			}
 			else
 			{
-				insCurIns.fModRM = TRUE;
-				insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-				insCurIns.fSpecialInstruction = TRUE;
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-				dsNextState = DASM_STATE_MOD_RM;
+				pstState->insCurIns.fModRM = TRUE;
+				pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+				pstState->insCurIns.fSpecialInstruction = TRUE;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				pstState->dsNextState = DASM_STATE_MOD_RM;
 			}
 			break;
 		}// D8h
 
 		case 0xDA:
 		{
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			insCurIns.fSpecialInstruction = TRUE;
-			insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->insCurIns.fSpecialInstruction = TRUE;
+			pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 		}// DAh
 
 		case 0xDC:
 		{
-			if(bFPUModRM >= 0xC0 && bFPUModRM <= 0xC7)	// DC C0+i
+			if(pstState->bFPUModRM >= 0xC0 && pstState->bFPUModRM <= 0xC7)	// DC C0+i
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
-								L"st(%d)", bFPUModRM - 0xC0);
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
+								L"st(%d)", pstState->bFPUModRM - 0xC0);
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 								L"st");
-				insCurIns.fSrcStrSet = TRUE;
-				insCurIns.fDesStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->insCurIns.fDesStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			}
 			else
 			{
-				insCurIns.fModRM = TRUE;
-				insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-				insCurIns.fSpecialInstruction = TRUE;
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_64BIT;
-				dsNextState = DASM_STATE_MOD_RM;	
+				pstState->insCurIns.fModRM = TRUE;
+				pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+				pstState->insCurIns.fSpecialInstruction = TRUE;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_64BIT;
+				pstState->dsNextState = DASM_STATE_MOD_RM;	
 			}
 			break;
 		}// DCh
 		
 		case 0xDE:
 		{
-			if(bFPUModRM >= 0xC0 && bFPUModRM <= 0xC7)	// DE C0+i
+			if(pstState->bFPUModRM >= 0xC0 && pstState->bFPUModRM <= 0xC7)	// DE C0+i
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
-								L"st(%d)", bFPUModRM - 0xC0);
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
+								L"st(%d)", pstState->bFPUModRM - 0xC0);
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 								L"st");
-				insCurIns.fSrcStrSet = TRUE;
-				insCurIns.fDesStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->insCurIns.fDesStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			}
 			else
 			{
-				insCurIns.fModRM = TRUE;
-				insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-				insCurIns.fSpecialInstruction = TRUE;
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
-				dsNextState = DASM_STATE_MOD_RM;
+				pstState->insCurIns.fModRM = TRUE;
+				pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+				pstState->insCurIns.fSpecialInstruction = TRUE;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
+				pstState->dsNextState = DASM_STATE_MOD_RM;
 			}
 			break;
 		}// DEh
@@ -6685,7 +7649,7 @@ BOOL OPCHndlrFPU_FADD(BYTE bOpcode)	// FADDP/FIADD also
  * DA /4	FISUB m32int		Subtract m32int from ST(0) and store result in ST(0)
  * DE /4	FISUB m16int		Subtract m16int from ST(0) and store result in ST(0)
  */
-BOOL OPCHndlrFPU_FSUB(BYTE bOpcode)	// + FSUBP/FISUB/FSUBR/FSUBRP/FISUBR
+BOOL OPCHndlrFPU_FSUB(PDASMSTATE pstState, BYTE bOpcode)	// + FSUBP/FISUB/FSUBR/FSUBRP/FISUBR
 {
 	#ifdef UNIT_TEST_ONLY
 		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
@@ -6702,79 +7666,79 @@ BOOL OPCHndlrFPU_FSUB(BYTE bOpcode)	// + FSUBP/FISUB/FSUBR/FSUBRP/FISUBR
 	{
 		case 0xD8:
 		{
-			if(bFPUModRM >= 0xE0 && bFPUModRM <= 0xE7)	// D8 E0+i
+			if(pstState->bFPUModRM >= 0xE0 && pstState->bFPUModRM <= 0xE7)	// D8 E0+i
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
-								L"st(%d)", bFPUModRM - 0xE0);
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
+								L"st(%d)", pstState->bFPUModRM - 0xE0);
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								L"st");
-				insCurIns.fSrcStrSet = TRUE;
-				insCurIns.fDesStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->insCurIns.fDesStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			}
 			else
 			{
-				insCurIns.fModRM = TRUE;
-				insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-				insCurIns.fSpecialInstruction = TRUE;
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-				dsNextState = DASM_STATE_MOD_RM;
+				pstState->insCurIns.fModRM = TRUE;
+				pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+				pstState->insCurIns.fSpecialInstruction = TRUE;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				pstState->dsNextState = DASM_STATE_MOD_RM;
 			}
 			break;
 		}// D8h
 
 		case 0xDA:
 		{
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			insCurIns.fSpecialInstruction = TRUE;
-			insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->insCurIns.fSpecialInstruction = TRUE;
+			pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 		}// DAh
 
 		case 0xDC:
 		{
-			if(bFPUModRM >= 0xE8 && bFPUModRM <= 0xEF)	// DC E8+i
+			if(pstState->bFPUModRM >= 0xE8 && pstState->bFPUModRM <= 0xEF)	// DC E8+i
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
-								L"st(%d)", bFPUModRM - 0xE8);
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
+								L"st(%d)", pstState->bFPUModRM - 0xE8);
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								L"st");
-				insCurIns.fSrcStrSet = TRUE;
-				insCurIns.fDesStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->insCurIns.fDesStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			}
 			else
 			{
-				insCurIns.fModRM = TRUE;
-				insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-				insCurIns.fSpecialInstruction = TRUE;
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-				dsNextState = DASM_STATE_MOD_RM;
+				pstState->insCurIns.fModRM = TRUE;
+				pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+				pstState->insCurIns.fSpecialInstruction = TRUE;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				pstState->dsNextState = DASM_STATE_MOD_RM;
 			}
 			break;
 		}// DCh
 		
 		case 0xDE:
 		{
-			if(bFPUModRM >= 0xE8 && bFPUModRM <= 0xEF)
+			if(pstState->bFPUModRM >= 0xE8 && pstState->bFPUModRM <= 0xEF)
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
-								L"st(%d)", bFPUModRM - 0xE8);
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
+								L"st(%d)", pstState->bFPUModRM - 0xE8);
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								L"st");
-				insCurIns.fSrcStrSet = TRUE;
-				insCurIns.fDesStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->insCurIns.fDesStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			}
 			else
 			{
-				insCurIns.fModRM = TRUE;
-				insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-				insCurIns.fSpecialInstruction = TRUE;
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-				dsNextState = DASM_STATE_MOD_RM;
+				pstState->insCurIns.fModRM = TRUE;
+				pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+				pstState->insCurIns.fSpecialInstruction = TRUE;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				pstState->dsNextState = DASM_STATE_MOD_RM;
 			}
 			break;
 		}// DEh
@@ -6799,7 +7763,7 @@ BOOL OPCHndlrFPU_FSUB(BYTE bOpcode)	// + FSUBP/FISUB/FSUBR/FSUBRP/FISUBR
  * DA /1	FIMUL m32int		Multiply ST(0) by m32int and store result in ST(0)
  * DE /1	FIMUL m16int		Multiply ST(0) by m16int and store result in ST(0)
  */
-BOOL OPCHndlrFPU_FMUL(BYTE bOpcode)	// + FMULP/FIMUL
+BOOL OPCHndlrFPU_FMUL(PDASMSTATE pstState, BYTE bOpcode)	// + FMULP/FIMUL
 {
 	#ifdef UNIT_TEST_ONLY
 		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
@@ -6816,79 +7780,79 @@ BOOL OPCHndlrFPU_FMUL(BYTE bOpcode)	// + FMULP/FIMUL
 	{
 		case 0xD8:
 		{
-			if(bFPUModRM >= 0xC8 && bFPUModRM <= 0xCF)
+			if(pstState->bFPUModRM >= 0xC8 && pstState->bFPUModRM <= 0xCF)
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
-								L"st(%d)", bFPUModRM - 0xC8);
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
+								L"st(%d)", pstState->bFPUModRM - 0xC8);
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								L"st");
-				insCurIns.fSrcStrSet = TRUE;
-				insCurIns.fDesStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->insCurIns.fDesStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			}
 			else
 			{
-				insCurIns.fModRM = TRUE;
-				insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-				insCurIns.fSpecialInstruction = TRUE;
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-				dsNextState = DASM_STATE_MOD_RM;
+				pstState->insCurIns.fModRM = TRUE;
+				pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+				pstState->insCurIns.fSpecialInstruction = TRUE;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				pstState->dsNextState = DASM_STATE_MOD_RM;
 			}
 			break;
 		}// D8h
 
 		case 0xDA:
 		{
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			insCurIns.fSpecialInstruction = TRUE;
-			insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->insCurIns.fSpecialInstruction = TRUE;
+			pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 		}// DAh
 
 		case 0xDC:
 		{
-			if(bFPUModRM >= 0xC8 && bFPUModRM <= 0xCF)
+			if(pstState->bFPUModRM >= 0xC8 && pstState->bFPUModRM <= 0xCF)
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
-								L"st(%d)", bFPUModRM - 0xC8);
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
+								L"st(%d)", pstState->bFPUModRM - 0xC8);
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								L"st");
-				insCurIns.fSrcStrSet = TRUE;
-				insCurIns.fDesStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->insCurIns.fDesStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			}
 			else
 			{
-				insCurIns.fModRM = TRUE;
-				insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-				insCurIns.fSpecialInstruction = TRUE;
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-				dsNextState = DASM_STATE_MOD_RM;
+				pstState->insCurIns.fModRM = TRUE;
+				pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+				pstState->insCurIns.fSpecialInstruction = TRUE;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				pstState->dsNextState = DASM_STATE_MOD_RM;
 			}
 			break;
 		}// DCh
 		
 		case 0xDE:
 		{
-			if(bFPUModRM >= 0xC8 && bFPUModRM <= 0xCF)
+			if(pstState->bFPUModRM >= 0xC8 && pstState->bFPUModRM <= 0xCF)
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
-								L"st(%d)", bFPUModRM - 0xC8);
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
+								L"st(%d)", pstState->bFPUModRM - 0xC8);
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								L"st");
-				insCurIns.fSrcStrSet = TRUE;
-				insCurIns.fDesStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->insCurIns.fDesStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			}
 			else
 			{
-				insCurIns.fModRM = TRUE;
-				insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-				insCurIns.fSpecialInstruction = TRUE;
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-				dsNextState = DASM_STATE_MOD_RM;
+				pstState->insCurIns.fModRM = TRUE;
+				pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+				pstState->insCurIns.fSpecialInstruction = TRUE;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				pstState->dsNextState = DASM_STATE_MOD_RM;
 			}
 			break;
 		}// DEh
@@ -6923,10 +7887,10 @@ BOOL OPCHndlrFPU_FMUL(BYTE bOpcode)	// + FMULP/FIMUL
  * DA /7	FIDIVR m32int		Divide m32int by ST(0) and store result in ST(0)
  * DE /7	FIDIVR m16int		Divide m16int by ST(0) and store result in ST(0)
  */
-BOOL OPCHndlrFPU_FDIV(BYTE bOpcode)	// + FDIVR/FIDIV/FDIVP/FDIVRP/FIDIVR
+BOOL OPCHndlrFPU_FDIV(PDASMSTATE pstState, BYTE bOpcode)	// + FDIVR/FIDIV/FDIVP/FDIVRP/FIDIVR
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
@@ -6940,109 +7904,109 @@ BOOL OPCHndlrFPU_FDIV(BYTE bOpcode)	// + FDIVR/FIDIV/FDIVP/FDIVRP/FIDIVR
 	{
 		case 0xD8:
 		{
-			if(bFPUModRM >= 0xF0 && bFPUModRM <= 0xF7)	// FDIV
+			if(pstState->bFPUModRM >= 0xF0 && pstState->bFPUModRM <= 0xF7)	// FDIV
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
-								L"st(%d)", bFPUModRM - 0xF0);
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
+								L"st(%d)", pstState->bFPUModRM - 0xF0);
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								L"st");
-				insCurIns.fSrcStrSet = TRUE;
-				insCurIns.fDesStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->insCurIns.fDesStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			}
-			else if(bFPUModRM >= 0xF8 && bFPUModRM <= 0xFF)	// FDIVR
+			else if(pstState->bFPUModRM >= 0xF8 && pstState->bFPUModRM <= 0xFF)	// FDIVR
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
-								L"st(%d)", bFPUModRM - 0xF8);
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
+								L"st(%d)", pstState->bFPUModRM - 0xF8);
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								L"st");
-				insCurIns.fSrcStrSet = TRUE;
-				insCurIns.fDesStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->insCurIns.fDesStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			}
 			else
 			{
-				insCurIns.fModRM = TRUE;
-				insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-				insCurIns.fSpecialInstruction = TRUE;
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-				dsNextState = DASM_STATE_MOD_RM;
+				pstState->insCurIns.fModRM = TRUE;
+				pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+				pstState->insCurIns.fSpecialInstruction = TRUE;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				pstState->dsNextState = DASM_STATE_MOD_RM;
 			}
 			break;
 		}// D8h
 
 		case 0xDA:
 		{
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			insCurIns.fSpecialInstruction = TRUE;
-			insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->insCurIns.fSpecialInstruction = TRUE;
+			pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 		}// DAh
 
 		case 0xDC:
 		{
-			if(bFPUModRM >= 0xF0 && bFPUModRM <= 0xF7)	// FDIVR
+			if(pstState->bFPUModRM >= 0xF0 && pstState->bFPUModRM <= 0xF7)	// FDIVR
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
-								L"st(%d)", bFPUModRM - 0xF0);
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
+								L"st(%d)", pstState->bFPUModRM - 0xF0);
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								L"st");
-				insCurIns.fSrcStrSet = TRUE;
-				insCurIns.fDesStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->insCurIns.fDesStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			}
-			else if(bFPUModRM >= 0xF8 && bFPUModRM <= 0xFF)	// FDIV
+			else if(pstState->bFPUModRM >= 0xF8 && pstState->bFPUModRM <= 0xFF)	// FDIV
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
-								L"st(%d)", bFPUModRM - 0xF8);
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
+								L"st(%d)", pstState->bFPUModRM - 0xF8);
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								L"st");
-				insCurIns.fSrcStrSet = TRUE;
-				insCurIns.fDesStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->insCurIns.fDesStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			}
 			else
 			{
-				insCurIns.fModRM = TRUE;
-				insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-				insCurIns.fSpecialInstruction = TRUE;
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-				dsNextState = DASM_STATE_MOD_RM;
+				pstState->insCurIns.fModRM = TRUE;
+				pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+				pstState->insCurIns.fSpecialInstruction = TRUE;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				pstState->dsNextState = DASM_STATE_MOD_RM;
 			}
 			break;
 		}// DCh
 		
 		case 0xDE:
 		{
-			if(bFPUModRM >= 0xF0 && bFPUModRM <= 0xF7)	// FDIVRP
+			if(pstState->bFPUModRM >= 0xF0 && pstState->bFPUModRM <= 0xF7)	// FDIVRP
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
-								L"st(%d)", bFPUModRM - 0xF0);
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
+								L"st(%d)", pstState->bFPUModRM - 0xF0);
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								L"st");
-				insCurIns.fSrcStrSet = TRUE;
-				insCurIns.fDesStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->insCurIns.fDesStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			}
-			else if(bFPUModRM >= 0xF8 && bFPUModRM <= 0xFF)	// FDIVP
+			else if(pstState->bFPUModRM >= 0xF8 && pstState->bFPUModRM <= 0xFF)	// FDIVP
 			{
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
-								L"st(%d)", bFPUModRM - 0xF8);
-				StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
+								L"st(%d)", pstState->bFPUModRM - 0xF8);
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 								L"st");
-				insCurIns.fSrcStrSet = TRUE;
-				insCurIns.fDesStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->insCurIns.fDesStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			}
 			else
 			{
-				insCurIns.fModRM = TRUE;
-				insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-				insCurIns.fSpecialInstruction = TRUE;
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-				dsNextState = DASM_STATE_MOD_RM;
+				pstState->insCurIns.fModRM = TRUE;
+				pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+				pstState->insCurIns.fSpecialInstruction = TRUE;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				pstState->dsNextState = DASM_STATE_MOD_RM;
 			}
 			break;
 		}// DEh
@@ -7058,92 +8022,92 @@ BOOL OPCHndlrFPU_FDIV(BYTE bOpcode)	// + FDIVR/FIDIV/FDIVP/FDIVRP/FIDIVR
 }
 
 
-BOOL OPCHndlrFPU_FABS(BYTE bOpcode)
+BOOL OPCHndlrFPU_FABS(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 
-BOOL OPCHndlrFPU_FCHS(BYTE bOpcode)
+BOOL OPCHndlrFPU_FCHS(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 
-BOOL OPCHndlrFPU_FSQRT(BYTE bOpcode)
+BOOL OPCHndlrFPU_FSQRT(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 
-BOOL OPCHndlrFPU_FPREM(BYTE bOpcode)	// + FPREM1
+BOOL OPCHndlrFPU_FPREM(PDASMSTATE pstState, BYTE bOpcode)	// + FPREM1
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 
-BOOL OPCHndlrFPU_FRNDINT(BYTE bOpcode)
+BOOL OPCHndlrFPU_FRNDINT(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 
-BOOL OPCHndlrFPU_FXTRACT(BYTE bOpcode)
+BOOL OPCHndlrFPU_FXTRACT(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -7160,17 +8124,17 @@ BOOL OPCHndlrFPU_FXTRACT(BYTE bOpcode)
  * D9 EE	FLDZ	Push +0.0 onto the FPU register stack.
  *
  */
-BOOL OPCHndlrFPU_Const(BYTE bOpcode)	// all constants
+BOOL OPCHndlrFPU_Const(PDASMSTATE pstState, BYTE bOpcode)	// all constants
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -7190,42 +8154,42 @@ BOOL OPCHndlrFPU_Const(BYTE bOpcode)	// all constants
  *
  * DF /4	FBLD m80dec
  */
-BOOL OPCHndlrFPU_FLoad(BYTE bOpcode)		// FLD/FILD/FBLD
+BOOL OPCHndlrFPU_FLoad(PDASMSTATE pstState, BYTE bOpcode)		// FLD/FILD/FBLD
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	if(bFPUModRM >= 0xC0 && bFPUModRM <= 0xC7)
+	if(pstState->bFPUModRM >= 0xC0 && pstState->bFPUModRM <= 0xC7)
 	{
-		StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
-						L"st(%d)", bFPUModRM - 0xC0);
-		insCurIns.fSrcStrSet = TRUE;
-		dsNextState = DASM_STATE_DUMP;
+		StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
+						L"st(%d)", pstState->bFPUModRM - 0xC0);
+		pstState->insCurIns.fSrcStrSet = TRUE;
+		pstState->dsNextState = DASM_STATE_DUMP;
 	}
 	else
 	{
-		insCurIns.fSpecialInstruction = TRUE;
-		insCurIns.fModRM = TRUE;
-		insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-		dsNextState = DASM_STATE_MOD_RM;
+		pstState->insCurIns.fSpecialInstruction = TRUE;
+		pstState->insCurIns.fModRM = TRUE;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+		pstState->dsNextState = DASM_STATE_MOD_RM;
 		switch(bOpcode)
 		{
 			case 0xDF:	// 16bit/64bit/80bit
 			{
-				if(bFPUReg == 0)
-					insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
-				else if(bFPUReg == 5)
-					insCurIns.bOperandSizeSrc = OPERANDSIZE_64BIT;
-				else if(bFPUReg == 4)
-					insCurIns.bOperandSizeSrc = OPERANDSIZE_80BIT;
+				if(pstState->bFPUReg == 0)
+					pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
+				else if(pstState->bFPUReg == 5)
+					pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_64BIT;
+				else if(pstState->bFPUReg == 4)
+					pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_80BIT;
 				else
 				{
-					wprintf_s(L"OPCHndlrFPU_FLoad(): Invalid 'reg' field %xh\n", bFPUReg);
+					wprintf_s(L"OPCHndlrFPU_FLoad(): Invalid 'reg' field %xh\n", pstState->bFPUReg);
 					return FALSE;
 				}
 				break;
@@ -7233,25 +8197,25 @@ BOOL OPCHndlrFPU_FLoad(BYTE bOpcode)		// FLD/FILD/FBLD
 
 			case 0xD9:	// m32real
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
 				break;
 			}
 
 			case 0xDD:	// m64real
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_64BIT;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_64BIT;
 				break;
 			}
 
 			case 0xDB:
 			{
-				if(bFPUReg == 0)
-					insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-				else if(bFPUReg == 5)
-					insCurIns.bOperandSizeSrc = OPERANDSIZE_80BIT;
+				if(pstState->bFPUReg == 0)
+					pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				else if(pstState->bFPUReg == 5)
+					pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_80BIT;
 				else
 				{
-					wprintf_s(L"OPCHndlrFPU_FLoad(): Invalid 'reg' field %xh\n", bFPUReg);
+					wprintf_s(L"OPCHndlrFPU_FLoad(): Invalid 'reg' field %xh\n", pstState->bFPUReg);
 					return FALSE;
 				}
 				break;
@@ -7287,63 +8251,63 @@ BOOL OPCHndlrFPU_FLoad(BYTE bOpcode)		// FLD/FILD/FBLD
  *
  * DF /6 FBSTP m80bcd	Store ST(0) in m80bcd and pop ST(0).
  */
-BOOL OPCHndlrFPU_FStore(BYTE bOpcode)		// FST/FSTP/FIST/FISTP/FBSTP
+BOOL OPCHndlrFPU_FStore(PDASMSTATE pstState, BYTE bOpcode)		// FST/FSTP/FIST/FISTP/FBSTP
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	if(bFPUModRM >= 0xD0 && bFPUModRM <= 0xD7)
+	if(pstState->bFPUModRM >= 0xD0 && pstState->bFPUModRM <= 0xD7)
 	{
 		// FST st(i)
-		StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
-						L"st(%d)", bFPUModRM - 0xD0);
-		insCurIns.fSrcStrSet = TRUE;
-		dsNextState = DASM_STATE_DUMP;
+		StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
+						L"st(%d)", pstState->bFPUModRM - 0xD0);
+		pstState->insCurIns.fSrcStrSet = TRUE;
+		pstState->dsNextState = DASM_STATE_DUMP;
 	}
-	else if(bFPUModRM >= 0xD8 && bFPUModRM <= 0xDF)
+	else if(pstState->bFPUModRM >= 0xD8 && pstState->bFPUModRM <= 0xDF)
 	{
 		// FSTP st(i)
-		StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
-						L"st(%d)", bFPUModRM - 0xD8);
-		insCurIns.fSrcStrSet = TRUE;
-		dsNextState = DASM_STATE_DUMP;
+		StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
+						L"st(%d)", pstState->bFPUModRM - 0xD8);
+		pstState->insCurIns.fSrcStrSet = TRUE;
+		pstState->dsNextState = DASM_STATE_DUMP;
 	}
 	else
 	{
-		insCurIns.fSpecialInstruction = TRUE;
-		insCurIns.fModRM = TRUE;
-		insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-		dsNextState = DASM_STATE_MOD_RM;
+		pstState->insCurIns.fSpecialInstruction = TRUE;
+		pstState->insCurIns.fModRM = TRUE;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+		pstState->dsNextState = DASM_STATE_MOD_RM;
 		switch(bOpcode)
 		{
 			case 0xD9:
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
 				break;
 
 			case 0xDD:
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_64BIT;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_64BIT;
 				break;
 
 			case 0xDB:
-				if(bFPUReg == 7)
-					insCurIns.bOperandSizeSrc = OPERANDSIZE_80BIT;
+				if(pstState->bFPUReg == 7)
+					pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_80BIT;
 				else	// DB /2 and DB /3
-					insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+					pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
 
 				break;
 
 			case 0xDF:
-				if(bFPUReg == 7)
-					insCurIns.bOperandSizeSrc = OPERANDSIZE_64BIT;
-				else if(bFPUReg == 6)	// fbstp /6
-					insCurIns.bOperandSizeSrc = OPERANDSIZE_80BIT;
+				if(pstState->bFPUReg == 7)
+					pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_64BIT;
+				else if(pstState->bFPUReg == 6)	// fbstp /6
+					pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_80BIT;
 				else	// DF /2 and DF /3
-					insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
+					pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
 				break;
 
 			default:
@@ -7352,7 +8316,7 @@ BOOL OPCHndlrFPU_FStore(BYTE bOpcode)		// FST/FSTP/FIST/FISTP/FBSTP
 				return FALSE;
 			}
 			
-		}// switch(bFPUReg)
+		}// switch(pstState->bFPUReg)
 	}
 
 	return TRUE;
@@ -7362,24 +8326,24 @@ BOOL OPCHndlrFPU_FStore(BYTE bOpcode)		// FST/FSTP/FIST/FISTP/FBSTP
  * D9 C8+i	FXCH ST(i)	Exchange the contents of ST(0) and ST(i)
  * D9 C9	FXCH		Exchange the contents of ST(0) and ST(1)
  */
-BOOL OPCHndlrFPU_FXCH(BYTE bOpcode)
+BOOL OPCHndlrFPU_FXCH(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	ASSERT(bFPUModRM >= 0xC8 && bFPUModRM <= 0xCF);	// always??
+	ASSERT(pstState->bFPUModRM >= 0xC8 && pstState->bFPUModRM <= 0xCF);	// always??
 
-	BYTE bFPUDataReg = bFPUModRM - 0xC8;
+	BYTE bFPUDataReg = pstState->bFPUModRM - 0xC8;
 
-	StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+	StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 					L"st(%x)", bFPUDataReg);
-	insCurIns.fSrcStrSet = TRUE;
-	dsNextState = DASM_STATE_DUMP;
+	pstState->insCurIns.fSrcStrSet = TRUE;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -7394,10 +8358,10 @@ BOOL OPCHndlrFPU_FXCH(BYTE bOpcode)
  * DB D0+i FCMOVNBE ST(0), ST(i)	Move if not below or equal (CF=0 and ZF=0)
  * DB D8+i FCMOVNU ST(0), ST(i)		Move if not unordered (PF=0)
  */
-BOOL OPCHndlrFPU_FCMOV(BYTE bOpcode)
+BOOL OPCHndlrFPU_FCMOV(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
@@ -7407,24 +8371,24 @@ BOOL OPCHndlrFPU_FCMOV(BYTE bOpcode)
 	BYTE bSrcReg;
 
 	// Determine the source FPU data register
-	if(bFPUModRM < 0xC8)				// C0+i
-		bSrcReg = bFPUModRM - 0xC0;
-	else if(bFPUModRM < 0xD0)			// C8+i
-		bSrcReg = bFPUModRM - 0xC8;
-	else if(bFPUModRM < 0xD8)			// D0+i
-		bSrcReg = bFPUModRM - 0xD0;
+	if(pstState->bFPUModRM < 0xC8)				// C0+i
+		bSrcReg = pstState->bFPUModRM - 0xC0;
+	else if(pstState->bFPUModRM < 0xD0)			// C8+i
+		bSrcReg = pstState->bFPUModRM - 0xC8;
+	else if(pstState->bFPUModRM < 0xD8)			// D0+i
+		bSrcReg = pstState->bFPUModRM - 0xD0;
 	else								// D8+i
-		bSrcReg = bFPUModRM - 0xD8;
+		bSrcReg = pstState->bFPUModRM - 0xD8;
 
 
 	// source is st(i) and destination is st always
-	StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+	StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 					L"st(%d)", bSrcReg);
-	StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+	StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 					L"st");
-	insCurIns.fSrcStrSet = TRUE;
-	insCurIns.fDesStrSet = TRUE;
-	dsNextState = DASM_STATE_DUMP;
+	pstState->insCurIns.fSrcStrSet = TRUE;
+	pstState->insCurIns.fDesStrSet = TRUE;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -7450,10 +8414,10 @@ BOOL OPCHndlrFPU_FCMOV(BYTE bOpcode)
  * DD E8+i	FUCOMP ST(i)	Compare ST(0) with ST(i) and pop register stack
  * DA E9	FUCOMPP			Compare ST(0) with ST(1) and pop register stack twice
  */
-BOOL OPCHndlrFPU_FCmpReal(BYTE bOpcode)	// FCOM,P,PP/FUCOM,P,PP/FCOMI,IP
+BOOL OPCHndlrFPU_FCmpReal(PDASMSTATE pstState, BYTE bOpcode)	// FCOM,P,PP/FUCOM,P,PP/FCOMI,IP
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
@@ -7465,34 +8429,34 @@ BOOL OPCHndlrFPU_FCmpReal(BYTE bOpcode)	// FCOM,P,PP/FUCOM,P,PP/FCOMI,IP
 	switch(bOpcode)
 	{
 		case 0xDA:
-			dsNextState = DASM_STATE_DUMP;
+			pstState->dsNextState = DASM_STATE_DUMP;
 			break;
 
 		case 0xD8:
 		{
-			if(bFPUModRM >= 0xD0 && bFPUModRM <= 0xD7)		// D0+i
+			if(pstState->bFPUModRM >= 0xD0 && pstState->bFPUModRM <= 0xD7)		// D0+i
 			{
-				bSrcReg = bFPUModRM - 0xD0;
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+				bSrcReg = pstState->bFPUModRM - 0xD0;
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 								L"st(%d)", bSrcReg);
-				insCurIns.fSrcStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			}
-			else if(bFPUModRM >= 0xD8 && bFPUModRM <= 0xDF)	// D8+i
+			else if(pstState->bFPUModRM >= 0xD8 && pstState->bFPUModRM <= 0xDF)	// D8+i
 			{
-				bSrcReg = bFPUModRM - 0xD8;
-				StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+				bSrcReg = pstState->bFPUModRM - 0xD8;
+				StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 								L"st(%d)", bSrcReg);
-				insCurIns.fSrcStrSet = TRUE;
-				dsNextState = DASM_STATE_DUMP;
+				pstState->insCurIns.fSrcStrSet = TRUE;
+				pstState->dsNextState = DASM_STATE_DUMP;
 			}
-			else //if(bFPUReg == 2 || bFPUReg == 3)
+			else //if(pstState->bFPUReg == 2 || pstState->bFPUReg == 3)
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-				insCurIns.fSpecialInstruction = TRUE;
-				insCurIns.fModRM = TRUE;
-				insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-				dsNextState = DASM_STATE_MOD_RM;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				pstState->insCurIns.fSpecialInstruction = TRUE;
+				pstState->insCurIns.fModRM = TRUE;
+				pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+				pstState->dsNextState = DASM_STATE_MOD_RM;
 			}
 			break;
 		}// D8h
@@ -7500,44 +8464,44 @@ BOOL OPCHndlrFPU_FCmpReal(BYTE bOpcode)	// FCOM,P,PP/FUCOM,P,PP/FCOMI,IP
 		case 0xDB:
 		case 0xDF:
 		{
-			if(bFPUModRM <= 0xF7)	// F0+i
-				bSrcReg = bFPUModRM - 0xF0;
+			if(pstState->bFPUModRM <= 0xF7)	// F0+i
+				bSrcReg = pstState->bFPUModRM - 0xF0;
 			else					// E8+i
-				bSrcReg = bFPUModRM - 0xE8;
+				bSrcReg = pstState->bFPUModRM - 0xE8;
 
-			StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 							L"st(%d)", bSrcReg);
-			StringCchPrintf(insCurIns.wszCurInsStrDes, _countof(insCurIns.wszCurInsStrDes),
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrDes, _countof(pstState->insCurIns.wszCurInsStrDes),
 							L"st");
-			insCurIns.fSrcStrSet = TRUE;
-			insCurIns.fDesStrSet = TRUE;
-			dsNextState = DASM_STATE_DUMP;
+			pstState->insCurIns.fSrcStrSet = TRUE;
+			pstState->insCurIns.fDesStrSet = TRUE;
+			pstState->dsNextState = DASM_STATE_DUMP;
 			break;
 		}// DBh
 
 		case 0xDC:
-			insCurIns.bOperandSizeSrc = OPERANDSIZE_64BIT;
-			insCurIns.fSpecialInstruction = TRUE;
-			insCurIns.fModRM = TRUE;
-			insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-			dsNextState = DASM_STATE_MOD_RM;
+			pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_64BIT;
+			pstState->insCurIns.fSpecialInstruction = TRUE;
+			pstState->insCurIns.fModRM = TRUE;
+			pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		case 0xDD:
 		{
-			if(bFPUModRM <= 0xE7)	// E0+i
-				bSrcReg = bFPUModRM - 0xE0;
+			if(pstState->bFPUModRM <= 0xE7)	// E0+i
+				bSrcReg = pstState->bFPUModRM - 0xE0;
 			else					// E8+i
-				bSrcReg = bFPUModRM - 0xE8;
-			StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+				bSrcReg = pstState->bFPUModRM - 0xE8;
+			StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 							L"st(%d)", bSrcReg);
-			insCurIns.fSrcStrSet = TRUE;
-			dsNextState = DASM_STATE_DUMP;
+			pstState->insCurIns.fSrcStrSet = TRUE;
+			pstState->dsNextState = DASM_STATE_DUMP;
 			break;
 		}// DDh
 
 		case 0xDE:
-			dsNextState = DASM_STATE_DUMP;
+			pstState->dsNextState = DASM_STATE_DUMP;
 			break;
 
 		default:
@@ -7554,10 +8518,10 @@ BOOL OPCHndlrFPU_FCmpReal(BYTE bOpcode)	// FCOM,P,PP/FUCOM,P,PP/FCOMI,IP
  * DE /3	FICOMP m16int	Compare ST(0) with m16int and pop stack register
  * DA /3	FICOMP m32int	Compare ST(0) with m32int and pop stack register
  */
-BOOL OPCHndlrFPU_FCmpInts(BYTE bOpcode)	// FICOM,P
+BOOL OPCHndlrFPU_FCmpInts(PDASMSTATE pstState, BYTE bOpcode)	// FICOM,P
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
@@ -7569,19 +8533,19 @@ BOOL OPCHndlrFPU_FCmpInts(BYTE bOpcode)	// FICOM,P
 	 * Opcode DA has 32bit int memory operand
 	 */
 	if(bOpcode == 0xDE)
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
 	else if(bOpcode == 0xDA)
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
 	else
 	{
 		wprintf_s(L"OPCHndlrFPU_FCmpInts(): Invalid opcode %xh\n", bOpcode);
 		return FALSE;
 	}
 
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 
 	return TRUE;
 }
@@ -7589,17 +8553,17 @@ BOOL OPCHndlrFPU_FCmpInts(BYTE bOpcode)	// FICOM,P
 /*	** FTST **
  * D9 E4	FTST	Compare ST(0) with 0.0.
  */
-BOOL OPCHndlrFPU_FTST(BYTE bOpcode)
+BOOL OPCHndlrFPU_FTST(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -7607,17 +8571,17 @@ BOOL OPCHndlrFPU_FTST(BYTE bOpcode)
 /*	** FXAM **
  * D9 E5	FXAM	Classify value or number in ST(0)
  */
-BOOL OPCHndlrFPU_FXAM(BYTE bOpcode)
+BOOL OPCHndlrFPU_FXAM(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -7633,17 +8597,17 @@ BOOL OPCHndlrFPU_FXAM(BYTE bOpcode)
  * D9 FE	FSIN	Replace ST(0) with its sine.
  * D9 FF	FCOS	Replace ST(0) with its cosine
  */
-BOOL OPCHndlrFPU_Trig(BYTE bOpcode)	// FSIN/FCOS/FSINCOS/FPTAN/FPATAN
+BOOL OPCHndlrFPU_Trig(PDASMSTATE pstState, BYTE bOpcode)	// FSIN/FCOS/FSINCOS/FPTAN/FPATAN
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -7655,17 +8619,17 @@ BOOL OPCHndlrFPU_Trig(BYTE bOpcode)	// FSIN/FCOS/FSINCOS/FPTAN/FPATAN
  * D9 F9	FYL2XP1
  * D9 FD	FSCALE	Scale ST(0) by ST(1).
  */
-BOOL OPCHndlrFPU_LgExSc(BYTE bOpcode)	// FYL2X/FYL2XP1/F2XM1/FSCALE
+BOOL OPCHndlrFPU_LgExSc(PDASMSTATE pstState, BYTE bOpcode)	// FYL2X/FYL2XP1/F2XM1/FSCALE
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -7680,17 +8644,17 @@ BOOL OPCHndlrFPU_LgExSc(BYTE bOpcode)	// FYL2X/FYL2XP1/F2XM1/FSCALE
  * D9 F6	FDECSTP
  * 
  */
-BOOL OPCHndlrFPU_Ctl(BYTE bOpcode)		// No operands
+BOOL OPCHndlrFPU_Ctl(PDASMSTATE pstState, BYTE bOpcode)		// No operands
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -7707,10 +8671,10 @@ BOOL OPCHndlrFPU_Ctl(BYTE bOpcode)		// No operands
  * DD /6	FNSAVE m94/108byte
  * DD C0+i	FFREE ST(i)
  */
-BOOL OPCHndlrFPU_CtlOp(BYTE bOpcode)	// With operands
+BOOL OPCHndlrFPU_CtlOp(PDASMSTATE pstState, BYTE bOpcode)	// With operands
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
@@ -7719,71 +8683,71 @@ BOOL OPCHndlrFPU_CtlOp(BYTE bOpcode)	// With operands
 
 	// First, handle instructions that do not have a memory operand
 	// FNSTSW
-	if(bFPUModRM == 0xE0)
+	if(pstState->bFPUModRM == 0xE0)
 	{
-		StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+		StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 						awszRegCodes16[REGCODE_AX]);
-		insCurIns.fSrcStrSet = TRUE;
-		dsNextState = DASM_STATE_DUMP;
+		pstState->insCurIns.fSrcStrSet = TRUE;
+		pstState->dsNextState = DASM_STATE_DUMP;
 		return TRUE;
 	}
 
 	// FFREE
-	if(bFPUModRM >= 0xC0 && bFPUModRM <= 0xC7)
+	if(pstState->bFPUModRM >= 0xC0 && pstState->bFPUModRM <= 0xC7)
 	{
-		BYTE bFPUDataReg = bFPUModRM - 0xC0;
-		StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+		BYTE bFPUDataReg = pstState->bFPUModRM - 0xC0;
+		StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 						L"st(%d)", bFPUDataReg);
-		insCurIns.fSrcStrSet = TRUE;
-		dsNextState = DASM_STATE_DUMP;
+		pstState->insCurIns.fSrcStrSet = TRUE;
+		pstState->dsNextState = DASM_STATE_DUMP;
 		return TRUE;
 	}
 
 	// There is an operand in the ModRM byte
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-	insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
 
 	// Determine operand size. Observe that only instructions with
 	// 5 & 7 in the 'reg' field have m2byte operands. We do not 
 	// display a PtrStr for other operand sizes.
-	if(bFPUReg == 5 || bFPUReg == 7)
+	if(pstState->bFPUReg == 5 || pstState->bFPUReg == 7)
 	{
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
 	}
-	// else insCurIns.bOperandSizeSrc = OPERANDSIZE_UNDEF;	// default
+	// else pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_UNDEF;	// default
 		
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
 
-BOOL OPCHndlrFPU_FNOP(BYTE bOpcode)
+BOOL OPCHndlrFPU_FNOP(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 
-BOOL OPCHndlrFPU_Invalid(BYTE bOpcode)
+BOOL OPCHndlrFPU_Invalid(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef UNIT_TEST_ONLY
-		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, bFPUModRM);
+		wprintf_s(L"%-25s : %02X %02X\n", __FUNCTIONW__, bOpcode, pstState->bFPUModRM);
 	#endif
 	
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	wprintf_s(L"OPCHndlrFPU_Invalid(): Invalid FPU opcode:modrm %xh:%xh\n", bOpcode, bFPUModRM);
+	wprintf_s(L"OPCHndlrFPU_Invalid(): Invalid FPU opcode:modrm %xh:%xh\n", bOpcode, pstState->bFPUModRM);
 	return FALSE;
 }
 
@@ -7800,16 +8764,16 @@ BOOL OPCHndlrFPU_Invalid(BYTE bOpcode)
  * 0F C1	/r	XADD r/m16,r16	Exchange r16 and r/m16; load sum into r/m16.
  * 0F C1	/r	XADD r/m32,r32	Exchange r32 and r/m32; load sum into r/m32.
  */
-BOOL OPCHndlrALU_XADD(BYTE bOpcode)
+BOOL OPCHndlrALU_XADD(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
 	// operand size can be determined by w-bit and op size attribute
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -7823,15 +8787,15 @@ BOOL OPCHndlrALU_XADD(BYTE bOpcode)
  * 0F 02 /r		LAR r16,r/m16	r16 = r/m16 masked by FF00H
  * 0F 02 /r		LAR r32,r/m32	r32 = r/m32 masked by 00FxFF00H
  */
-BOOL OPCHndlrMem_LAR(BYTE bOpcode)
+BOOL OPCHndlrMem_LAR(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -7839,16 +8803,16 @@ BOOL OPCHndlrMem_LAR(BYTE bOpcode)
  * 0F 03 /r		LSL r16,r/m16	Load: r16 = segment limit, selector r/m16
  * 0F 03 /r		LSL r32,r/m32	Load: r32 = segment limit, selector r/m32)
  */
-BOOL OPCHndlrMem_LSL(BYTE bOpcode)
+BOOL OPCHndlrMem_LSL(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
 	// opsize attrib
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -7865,7 +8829,7 @@ BOOL OPCHndlrMem_LSL(BYTE bOpcode)
  * 0F 21 /r		MOV r32, DR0-DR7
  * 0F 23 /r		MOV DR0-DR7,r32
  */
-BOOL OPCHndlrMem_MOVCrDr(BYTE bOpcode)
+BOOL OPCHndlrMem_MOVCrDr(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -7873,54 +8837,54 @@ BOOL OPCHndlrMem_MOVCrDr(BYTE bOpcode)
 
 	if(bOpcode == 0x22)
 	{
-		insCurIns.fModRM = TRUE;
-		insCurIns.bModRMType = MODRM_TYPE_R;
+		pstState->insCurIns.fModRM = TRUE;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 
-		insCurIns.fSpecialInstruction = TRUE;
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-		insCurIns.bRegTypeSrc = REGTYPE_GREG;
-		insCurIns.bRegTypeDest = REGTYPE_CREG;
-		dsNextState = DASM_STATE_MOD_RM;
+		pstState->insCurIns.fSpecialInstruction = TRUE;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+		pstState->insCurIns.bRegTypeSrc = REGTYPE_GREG;
+		pstState->insCurIns.bRegTypeDest = REGTYPE_CREG;
+		pstState->dsNextState = DASM_STATE_MOD_RM;
 	}
 	else if(bOpcode == 0x20)
 	{
-		insCurIns.fModRM = TRUE;
-		insCurIns.bModRMType = MODRM_TYPE_R;
+		pstState->insCurIns.fModRM = TRUE;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 
-		insCurIns.fSpecialInstruction = TRUE;
-		insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
-		insCurIns.bRegTypeSrc = REGTYPE_CREG;
-		insCurIns.bRegTypeDest = REGTYPE_GREG;
-		dsNextState = DASM_STATE_MOD_RM;
+		pstState->insCurIns.fSpecialInstruction = TRUE;
+		pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
+		pstState->insCurIns.bRegTypeSrc = REGTYPE_CREG;
+		pstState->insCurIns.bRegTypeDest = REGTYPE_GREG;
+		pstState->dsNextState = DASM_STATE_MOD_RM;
 	}
 	else if(bOpcode == 0x21)
 	{
-		insCurIns.fModRM = TRUE;
-		insCurIns.bModRMType = MODRM_TYPE_R;
+		pstState->insCurIns.fModRM = TRUE;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 
-		insCurIns.fSpecialInstruction = TRUE;
-		insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
-		insCurIns.bRegTypeSrc = REGTYPE_DREG;
-		insCurIns.bRegTypeDest = REGTYPE_GREG;
-		dsNextState = DASM_STATE_MOD_RM;
+		pstState->insCurIns.fSpecialInstruction = TRUE;
+		pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
+		pstState->insCurIns.bRegTypeSrc = REGTYPE_DREG;
+		pstState->insCurIns.bRegTypeDest = REGTYPE_GREG;
+		pstState->dsNextState = DASM_STATE_MOD_RM;
 	}
 	else if(bOpcode == 0x23)
 	{
-		insCurIns.fModRM = TRUE;
-		insCurIns.bModRMType = MODRM_TYPE_R;
+		pstState->insCurIns.fModRM = TRUE;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 
-		insCurIns.fSpecialInstruction = TRUE;
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-		insCurIns.bRegTypeSrc = REGTYPE_GREG;
-		insCurIns.bRegTypeDest = REGTYPE_DREG;
-		dsNextState = DASM_STATE_MOD_RM;
+		pstState->insCurIns.fSpecialInstruction = TRUE;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+		pstState->insCurIns.bRegTypeSrc = REGTYPE_GREG;
+		pstState->insCurIns.bRegTypeDest = REGTYPE_DREG;
+		pstState->dsNextState = DASM_STATE_MOD_RM;
 	}
 	else
 	{
 		wprintf_s(L"OPCHndlrMem_MOVCrDr(): Invalid opcode %xh\n", bOpcode);
 		return FALSE;
 	}
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -7932,22 +8896,22 @@ BOOL OPCHndlrMem_MOVCrDr(BYTE bOpcode)
  * 0F BA /4 ib	BT r/m16,imm8	Store selected bit in CF flag
  * 0F BA /4 ib	BT r/m32,imm8	Store selected bit in CF flag
  */
-BOOL OPCHndlrMem_BT(BYTE bOpcode)			// Bit Test
+BOOL OPCHndlrMem_BT(PDASMSTATE pstState, BYTE bOpcode)			// Bit Test
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
 	// There is a modRM byte in any case
-	insCurIns.fModRM = TRUE;
+	pstState->insCurIns.fModRM = TRUE;
 
 	if(bOpcode == 0xa3)
-		insCurIns.bModRMType = MODRM_TYPE_R;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 	else if(bOpcode == 0xba)
 	{
-		insCurIns.fImm = TRUE;
-		insCurIns.bImmType = IMM_8BIT;
-		insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+		pstState->insCurIns.fImm = TRUE;
+		pstState->insCurIns.bImmType = IMM_8BIT;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
 	}
 	else
 	{
@@ -7955,7 +8919,7 @@ BOOL OPCHndlrMem_BT(BYTE bOpcode)			// Bit Test
 		return FALSE;
 	}
 
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -7967,22 +8931,22 @@ BOOL OPCHndlrMem_BT(BYTE bOpcode)			// Bit Test
  * 0F BA /5 ib	BTS r/m16,imm8 Store selected bit in CF flag and set
  * 0F BA /5 ib	BTS r/m32,imm8 Store selected bit in CF flag and set
  */
-BOOL OPCHndlrMem_BTS(BYTE bOpcode)			// Bit Test and Set
+BOOL OPCHndlrMem_BTS(PDASMSTATE pstState, BYTE bOpcode)			// Bit Test and Set
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
 	// There is a modRM byte in any case
-	insCurIns.fModRM = TRUE;
+	pstState->insCurIns.fModRM = TRUE;
 
 	if(bOpcode == 0xab)
-		insCurIns.bModRMType = MODRM_TYPE_R;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 	else if(bOpcode == 0xba)
 	{
-		insCurIns.fImm = TRUE;
-		insCurIns.bImmType = IMM_8BIT;
-		insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+		pstState->insCurIns.fImm = TRUE;
+		pstState->insCurIns.bImmType = IMM_8BIT;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
 	}
 	else
 	{
@@ -7990,7 +8954,7 @@ BOOL OPCHndlrMem_BTS(BYTE bOpcode)			// Bit Test and Set
 		return FALSE;
 	}
 
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -7998,27 +8962,27 @@ BOOL OPCHndlrMem_BTS(BYTE bOpcode)			// Bit Test and Set
  * 0F B2 /r		LSS r16,m16:16	Load SS:r16 with far pointer from memory
  * 0F B2 /r		LSS r32,m16:32	Load SS:r32 with far pointer from memory
  */
-BOOL OPCHndlrMem_LSS(BYTE bOpcode)			// Load Full Pointer
+BOOL OPCHndlrMem_LSS(PDASMSTATE pstState, BYTE bOpcode)			// Load Full Pointer
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 	
-	insCurIns.fSpecialInstruction = TRUE;
-	if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 	{
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-		insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+		pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
 	}
 	else
 	{
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_48BIT;
-		insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_48BIT;
+		pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
 	}
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -8030,22 +8994,22 @@ BOOL OPCHndlrMem_LSS(BYTE bOpcode)			// Load Full Pointer
  * 0F BA /6 ib	BTR r/m16,imm8 Store selected bit in CF flag and clear
  * 0F BA /6 ib	BTR r/m32,imm8 Store selected bit in CF flag and clear
  */
-BOOL OPCHndlrMem_BTR(BYTE bOpcode)
+BOOL OPCHndlrMem_BTR(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
 	// There is a modRM byte in any case
-	insCurIns.fModRM = TRUE;
+	pstState->insCurIns.fModRM = TRUE;
 
 	if(bOpcode == 0xb3)
-		insCurIns.bModRMType = MODRM_TYPE_R;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 	else if(bOpcode == 0xba)
 	{
-		insCurIns.fImm = TRUE;
-		insCurIns.bImmType = IMM_8BIT;
-		insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+		pstState->insCurIns.fImm = TRUE;
+		pstState->insCurIns.bImmType = IMM_8BIT;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
 	}
 	else
 	{
@@ -8053,7 +9017,7 @@ BOOL OPCHndlrMem_BTR(BYTE bOpcode)
 		return FALSE;
 	}
 
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -8061,28 +9025,28 @@ BOOL OPCHndlrMem_BTR(BYTE bOpcode)
  * 0F B4 /r		LFS r16,m16:16	Load FS:r16 with far pointer from memory
  * 0F B4 /r		LFS r32,m16:32	Load FS:r32 with far pointer from memory
  */
-BOOL OPCHndlrMem_LFS(BYTE bOpcode)			// Load Full Pointer
+BOOL OPCHndlrMem_LFS(PDASMSTATE pstState, BYTE bOpcode)			// Load Full Pointer
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 
-	insCurIns.fSpecialInstruction = TRUE;
-	if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 	{
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-		insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+		pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
 	}
 	else
 	{
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_48BIT;
-		insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_48BIT;
+		pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
 	}
 
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -8090,28 +9054,28 @@ BOOL OPCHndlrMem_LFS(BYTE bOpcode)			// Load Full Pointer
  * 0F B5 /r		LGS r16,m16:16	Load GS:r16 with far pointer from memory
  * 0F B5 /r		LGS r32,m16:32	Load GS:r32 with far pointer from memory
  */
-BOOL OPCHndlrMem_LGS(BYTE bOpcode)			// Load Full Pointer
+BOOL OPCHndlrMem_LGS(PDASMSTATE pstState, BYTE bOpcode)			// Load Full Pointer
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 
-	insCurIns.fSpecialInstruction = TRUE;
-	if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
 	{
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-		insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+		pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
 	}
 	else
 	{
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_48BIT;
-		insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_48BIT;
+		pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
 	}
 
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -8120,27 +9084,27 @@ BOOL OPCHndlrMem_LGS(BYTE bOpcode)			// Load Full Pointer
  * 0F B6 /r		MOVZX r32,r/m8		Move byte to doubleword, zero-extension
  * 0F B7 /r		MOVZX r32,r/m16		Move word to doubleword, zero-extension
  */
-BOOL OPCHndlrMem_MOVZX(BYTE bOpcode)
+BOOL OPCHndlrMem_MOVZX(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	insCurIns.fSpecialInstruction = TRUE;	// different sized source and dest operands
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.fSpecialInstruction = TRUE;	// different sized source and dest operands
 	if(bOpcode == 0xb6)
 	{
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_8BIT;
-		if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-			insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_8BIT;
+		if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
 		else
-			insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
+			pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
 	}
 	else if(bOpcode == 0xb7)
 	{
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
-		insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
+		pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
 	}
 	else
 	{
@@ -8148,7 +9112,7 @@ BOOL OPCHndlrMem_MOVZX(BYTE bOpcode)
 		return FALSE;
 	}
 
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -8158,27 +9122,27 @@ BOOL OPCHndlrMem_MOVZX(BYTE bOpcode)
  * 0F BE /r		MOVSX r32,r/m8		Move byte to doubleword, sign-extension
  * 0F BF /r		MOVSX r32,r/m16		Move word to doubleword, sign-extension
  */
-BOOL OPCHndlrMem_MOVSX(BYTE bOpcode)
+BOOL OPCHndlrMem_MOVSX(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	insCurIns.fSpecialInstruction = TRUE;	// different sized source and dest operands
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.fSpecialInstruction = TRUE;	// different sized source and dest operands
 	if(bOpcode == 0xbe)
 	{
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_8BIT;
-		if(insCurIns.wPrefixTypes & PREFIX_OPSIZE)
-			insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_8BIT;
+		if(pstState->insCurIns.wPrefixTypes & PREFIX_OPSIZE)
+			pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_16BIT;
 		else
-			insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
+			pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
 	}
 	else if(bOpcode == 0xbf)
 	{
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
-		insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
+		pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
 	}
 	else
 	{
@@ -8186,7 +9150,7 @@ BOOL OPCHndlrMem_MOVSX(BYTE bOpcode)
 		return FALSE;
 	}
 
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -8198,22 +9162,22 @@ BOOL OPCHndlrMem_MOVSX(BYTE bOpcode)
  * 0F BA /7 ib	BTC r/m16,imm8	Store selected bit in CF flag and complement
  * 0F BA /7 ib	BTC r/m32,imm8	Store selected bit in CF flag and complement
  */
-BOOL OPCHndlrMem_BTC(BYTE bOpcode)
+BOOL OPCHndlrMem_BTC(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
 	// There is a modRM byte in any case
-	insCurIns.fModRM = TRUE;
+	pstState->insCurIns.fModRM = TRUE;
 
 	if(bOpcode == 0xbb)
-		insCurIns.bModRMType = MODRM_TYPE_R;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 	else if(bOpcode == 0xba)
 	{
-		insCurIns.fImm = TRUE;
-		insCurIns.bImmType = IMM_8BIT;
-		insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+		pstState->insCurIns.fImm = TRUE;
+		pstState->insCurIns.bImmType = IMM_8BIT;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
 	}
 	else
 	{
@@ -8221,7 +9185,7 @@ BOOL OPCHndlrMem_BTC(BYTE bOpcode)
 		return FALSE;
 	}
 
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -8230,7 +9194,7 @@ BOOL OPCHndlrMem_BTC(BYTE bOpcode)
  * 0F BC	BSF r32,r/m32	Bit scan forward on r/m32
  * IASD Vol2 Table B-10: ModRM byte is present and is of type /r
  */
-BOOL OPCHndlrMem_BSF(BYTE bOpcode)
+BOOL OPCHndlrMem_BSF(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -8238,11 +9202,11 @@ BOOL OPCHndlrMem_BSF(BYTE bOpcode)
 
 	// Destination is always a register but the opcode has d-bit = 0
 	// So force d-bit=1
-	insCurIns.bDBit = 1;
-	insCurIns.fWBitAbsent = TRUE;
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.bDBit = 1;
+	pstState->insCurIns.fWBitAbsent = TRUE;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -8251,22 +9215,22 @@ BOOL OPCHndlrMem_BSF(BYTE bOpcode)
  * 0F BD	BSR r32,r/m32	Bit scan reverse on r/m32
  * IASD Vol2 Table B-10: ModRM byte is present and is of type /r
  */
-BOOL OPCHndlrMem_BSR(BYTE bOpcode)
+BOOL OPCHndlrMem_BSR(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
 /*	** BSWAP **
  * 0F C8+rd		BSWAP	r32 Reverses the byte order of a 32-bit register.
  */
-BOOL OPCHndlrMem_ByteSWAP(BYTE bOpcode)
+BOOL OPCHndlrMem_ByteSWAP(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -8275,10 +9239,10 @@ BOOL OPCHndlrMem_ByteSWAP(BYTE bOpcode)
 	// Get the register name index
 	BYTE bReg = bOpcode - 0xC8;
 
-	StringCchPrintf(insCurIns.wszCurInsStrSrc, _countof(insCurIns.wszCurInsStrSrc),
+	StringCchPrintf(pstState->insCurIns.wszCurInsStrSrc, _countof(pstState->insCurIns.wszCurInsStrSrc),
 								awszRegCodes32[bReg]);
-	insCurIns.fSrcStrSet = TRUE;
-	dsNextState = DASM_STATE_DUMP;
+	pstState->insCurIns.fSrcStrSet = TRUE;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -8287,18 +9251,18 @@ BOOL OPCHndlrMem_ByteSWAP(BYTE bOpcode)
 
 /* ** CMOVxx **
  * All have ModRM bytes and mnemonics are already written into
- * wszCurInsStr.
+ * pstState->wszCurInsStr.
  * Operand size is 16/32bit depending on operandsize prefix.
  */
-BOOL OPCHndlrCC_CMOV(BYTE bOpcode)		// Conditional move
+BOOL OPCHndlrCC_CMOV(PDASMSTATE pstState, BYTE bOpcode)		// Conditional move
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -8314,19 +9278,19 @@ BOOL OPCHndlrCC_CMOV(BYTE bOpcode)		// Conditional move
  *
  * Update: Table B-10 IASD Vol2 shows this is true. Reg = 000.
  */
-BOOL OPCHndlrCC_SETxx(BYTE bOpcode)	// SET byte on condition
+BOOL OPCHndlrCC_SETxx(PDASMSTATE pstState, BYTE bOpcode)	// SET byte on condition
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_DIGIT;	// do not consider reg bits
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;	// do not consider reg bits
 
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.bOperandSizeSrc = OPERANDSIZE_8BIT;	// 8bit always
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_8BIT;	// 8bit always
 
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -8343,23 +9307,23 @@ BOOL OPCHndlrCC_SETxx(BYTE bOpcode)	// SET byte on condition
  *									ECX:EBX into m64. Else, clear ZF and load m64 into
  *									EDX:EAX.
  */
-BOOL OPCHndlrCC_CmpXchg(BYTE bOpcode)
+BOOL OPCHndlrCC_CmpXchg(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
 	if(bOpcode == 0xb0 || bOpcode == 0xb1)
-		insCurIns.bModRMType = MODRM_TYPE_R;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 	else if(bOpcode == 0xc7)
 	{
-		insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-		insCurIns.fSpecialInstruction = TRUE;
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_64BIT;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+		pstState->insCurIns.fSpecialInstruction = TRUE;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_64BIT;
 	}
 
-	insCurIns.fModRM = TRUE;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 
 	return TRUE;
 }
@@ -8376,7 +9340,7 @@ BOOL OPCHndlrCC_CmpXchg(BYTE bOpcode)
  * 0F 00 /4		VERR r/m16		Set ZF=1 if segment specified with r/m16 can be read
  * 0F 00 /5		VERW r/m16		Set ZF=1 if segment specified with r/m16 can be written
  */
-BOOL OPCHndlrSysIO_LdtTrS(BYTE bOpcode)	// 0f 00 LLDT/SLDT/LTR/...
+BOOL OPCHndlrSysIO_LdtTrS(PDASMSTATE pstState, BYTE bOpcode)	// 0f 00 LLDT/SLDT/LTR/...
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -8386,15 +9350,15 @@ BOOL OPCHndlrSysIO_LdtTrS(BYTE bOpcode)	// 0f 00 LLDT/SLDT/LTR/...
 	static WCHAR awszMnemonics[][MAX_OPCODE_NAME_LEN+1] = 
 					{L"sldt", L"str", L"lldt", L"ltr", L"verr", L"verw"};
 
-	Util_vSplitModRMByte(*pByteInCode, NULL, &bReg, NULL);
+	Util_vSplitModRMByte(*pstState->pbCurrentCodePtr, NULL, &bReg, NULL);
 	ASSERT(bReg >= 0 && bReg <= 5);	// todo: ASSERT_ALWAYS?
-	StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[bReg]);
+	StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[bReg]);
 
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;	// even SLDT uses only 16bits
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;	// even SLDT uses only 16bits
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -8412,7 +9376,7 @@ BOOL OPCHndlrSysIO_LdtTrS(BYTE bOpcode)	// 0f 00 LLDT/SLDT/LTR/...
  * 0F 01 /3		LIDT m16&32		Load m into IDTR
  *
  */
-BOOL OPCHndlrSysIO_GdtIdMsw(BYTE bOpcode)	// 0f 01 LGDT/SGDT/LIDT/...
+BOOL OPCHndlrSysIO_GdtIdMsw(PDASMSTATE pstState, BYTE bOpcode)	// 0f 01 LGDT/SGDT/LIDT/...
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -8422,25 +9386,25 @@ BOOL OPCHndlrSysIO_GdtIdMsw(BYTE bOpcode)	// 0f 01 LGDT/SGDT/LIDT/...
 	static WCHAR awszMnemonics[][MAX_OPCODE_NAME_LEN+1] = 
 					{L"sgdt", L"sidt", L"lgdt", L"lidt", L"smsw", L"!", L"lmsw", L"invlpg"};
 
-	Util_vSplitModRMByte(*pByteInCode, NULL, &bReg, NULL);
+	Util_vSplitModRMByte(*pstState->pbCurrentCodePtr, NULL, &bReg, NULL);
 	ASSERT(bReg != 5 && bReg >= 0 && bReg <= 7);
-	StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", awszMnemonics[bReg]);
+	StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", awszMnemonics[bReg]);
 	switch(bReg)
 	{
 		case 0:
 		case 1:
 		case 2:
 		case 3:
-			insCurIns.bOperandSizeSrc = OPERANDSIZE_48BIT;
+			pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_48BIT;
 			break;
 
 		case 4:
 		case 6:
-			insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
+			pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;
 			break;
 
 		case 7:
-			insCurIns.bOperandSizeSrc = OPERANDSIZE_UNDEF;
+			pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_UNDEF;
 			break;
 		
 		default:
@@ -8448,10 +9412,10 @@ BOOL OPCHndlrSysIO_GdtIdMsw(BYTE bOpcode)	// 0f 01 LGDT/SGDT/LIDT/...
 			return FALSE;
 	}// switch(bReg)
 
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 
 	return TRUE;
 }
@@ -8459,134 +9423,134 @@ BOOL OPCHndlrSysIO_GdtIdMsw(BYTE bOpcode)	// 0f 01 LGDT/SGDT/LIDT/...
 /*	** CLTS **
  * 0F 06	CLTS	Clears TS flag in CR0 
  */
-BOOL OPCHndlrSysIO_CLTS(BYTE bOpcode)		// Clear Task-Switched Flag in CR0
+BOOL OPCHndlrSysIO_CLTS(PDASMSTATE pstState, BYTE bOpcode)		// Clear Task-Switched Flag in CR0
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
-BOOL OPCHndlrSysIO_INVD(BYTE bOpcode)		// Invalidate internal caches
+BOOL OPCHndlrSysIO_INVD(PDASMSTATE pstState, BYTE bOpcode)		// Invalidate internal caches
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 /*	** WBINVD **
  * 0F 09	WBINVD
  */
-BOOL OPCHndlrSysIO_WBINVD(BYTE bOpcode)		// write-back and invalidate cache
+BOOL OPCHndlrSysIO_WBINVD(PDASMSTATE pstState, BYTE bOpcode)		// write-back and invalidate cache
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 /*	** UD2 **
  * 0B	UD2		Raise invalid opcode exception
  */
-BOOL OPCHndlrSysIO_UD2(BYTE bOpcode)		// undefined instruction
+BOOL OPCHndlrSysIO_UD2(PDASMSTATE pstState, BYTE bOpcode)		// undefined instruction
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 /*	** WRMSR **
  * 0F 30	WRMSR
  */
-BOOL OPCHndlrSysIO_WRMSR(BYTE bOpcode)		// Write To Model Specific Register
+BOOL OPCHndlrSysIO_WRMSR(PDASMSTATE pstState, BYTE bOpcode)		// Write To Model Specific Register
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 /*	** RDTSC **
  * 0F 31	RDTSC
  */
-BOOL OPCHndlrSysIO_RDTSC(BYTE bOpcode)
+BOOL OPCHndlrSysIO_RDTSC(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 /*	** RDMSR **
  * 0F 32	RDMSR	Load MSR specified by ECX into EDX:EAX
  */
-BOOL OPCHndlrSysIO_RDMSR(BYTE bOpcode)
+BOOL OPCHndlrSysIO_RDMSR(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 /*	** RDPMC **
  * 0F 33	RDPMC
  */
-BOOL OPCHndlrSysIO_RDPMC(BYTE bOpcode)		// Read Performance Monitoring Counters
+BOOL OPCHndlrSysIO_RDPMC(PDASMSTATE pstState, BYTE bOpcode)		// Read Performance Monitoring Counters
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 /*	** SYSENTER **
  * 0F, 34	SYSENTER	Transition to System Call Entry Point
  */
-BOOL OPCHndlrSysIO_SYSENTER(BYTE bOpcode)
+BOOL OPCHndlrSysIO_SYSENTER(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 /*	** SYSEXIT **
  * 0F, 35	SYSEXIT		Transition from System Call Entry Point
  */
-BOOL OPCHndlrSysIO_SYSEXIT(BYTE bOpcode)
+BOOL OPCHndlrSysIO_SYSEXIT(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 /*	** PREFETCHxx **
  * 
  */
-BOOL OPCHndlrSysIO_Prefetch(BYTE bOpcode)
+BOOL OPCHndlrSysIO_Prefetch(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -8598,26 +9562,26 @@ BOOL OPCHndlrSysIO_Prefetch(BYTE bOpcode)
 /*	** CPUID **
  * 0F A2	CPUID
  */
-BOOL OPCHndlrSysIO_CPUID(BYTE bOpcode)
+BOOL OPCHndlrSysIO_CPUID(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 /*	** RSM **
  * 0F AA	RSM		Resume operation of interrupted program
  */
-BOOL OPCHndlrSysIO_RSM(BYTE bOpcode)		// Resume from System Mgmt mode
+BOOL OPCHndlrSysIO_RSM(PDASMSTATE pstState, BYTE bOpcode)		// Resume from System Mgmt mode
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -8638,7 +9602,7 @@ BOOL OPCHndlrSysIO_RSM(BYTE bOpcode)		// Resume from System Mgmt mode
  * 0F BA /5 ib	BTS r/m16,imm8
  * 0F BA /5 ib	BTS r/m32,imm8
  */
-BOOL OPCHndlrMulti_BitTestX(BYTE bOpcode)		// 0f ba
+BOOL OPCHndlrMulti_BitTestX(PDASMSTATE pstState, BYTE bOpcode)		// 0f ba
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -8648,25 +9612,25 @@ BOOL OPCHndlrMulti_BitTestX(BYTE bOpcode)		// 0f ba
 	// This is the extension to the primary opcode.
 	BYTE bOpcodeEx;
 
-	Util_vSplitModRMByte(*pByteInCode, NULL, &bOpcodeEx, NULL);
+	Util_vSplitModRMByte(*pstState->pbCurrentCodePtr, NULL, &bOpcodeEx, NULL);
 
 	switch(bOpcodeEx)
 	{
 		case 4:
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", L"bt");
-			return OPCHndlrMem_BT(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", L"bt");
+			return OPCHndlrMem_BT(pstState, bOpcode);
 
 		case 5:
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", L"bts");
-			return OPCHndlrMem_BTS(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", L"bts");
+			return OPCHndlrMem_BTS(pstState, bOpcode);
 
 		case 6:
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", L"btr");
-			return OPCHndlrMem_BTR(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", L"btr");
+			return OPCHndlrMem_BTR(pstState, bOpcode);
 
 		case 7:
-			StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"%s", L"btc");
-			return OPCHndlrMem_BTC(bOpcode);
+			StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"%s", L"btc");
+			return OPCHndlrMem_BTC(pstState, bOpcode);
 
 		default:
 			wprintf_s(L"OPCHndlrMulti_BitTestX(): Invalid opcode extension %u\n", bOpcodeEx);
@@ -8687,19 +9651,19 @@ BOOL OPCHndlrMulti_BitTestX(BYTE bOpcode)		// 0f ba
  * MMX register or a quad-word operand in memory. All of them
  * have a /r ModRM byte following the opcode.
  */
-BOOL OPCHndlrMMX_PArith(BYTE bOpcode)
+BOOL OPCHndlrMMX_PArith(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.bDBit = 1;
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	insCurIns.bOperandSizeSrc = insCurIns.bOperandSizeDes = OPERANDSIZE_MMX64;
-	insCurIns.bRegTypeDest = insCurIns.bRegTypeSrc = REGTYPE_MMX;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.bDBit = 1;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.bOperandSizeSrc = pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_MMX64;
+	pstState->insCurIns.bRegTypeDest = pstState->insCurIns.bRegTypeSrc = REGTYPE_MMX;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -8708,19 +9672,19 @@ BOOL OPCHndlrMMX_PArith(BYTE bOpcode)
  * 74h, 75h, 76h: PCMPEQ{B,W,D}
  * Same as arithmetic instructions.
  */
-BOOL OPCHndlrMMX_PCmp(BYTE bOpcode)
+BOOL OPCHndlrMMX_PCmp(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.bDBit = 1;
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	insCurIns.bOperandSizeSrc = insCurIns.bOperandSizeDes = OPERANDSIZE_MMX64;
-	insCurIns.bRegTypeDest = insCurIns.bRegTypeSrc = REGTYPE_MMX;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.bDBit = 1;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.bOperandSizeSrc = pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_MMX64;
+	pstState->insCurIns.bRegTypeDest = pstState->insCurIns.bRegTypeSrc = REGTYPE_MMX;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -8740,43 +9704,43 @@ BOOL OPCHndlrMMX_PCmp(BYTE bOpcode)
  * 0F 69 /r PUNPCKHWD mm,mm/m64		Interleave high-order words from mm and mm/m64 intomm.
  * 0F 6A /r PUNPCKHDQ mm,mm/m64		Interleave high-order doublewords from mm and mm/m64 into mm.
  */
-BOOL OPCHndlrMMX_PConv(BYTE bOpcode)
+BOOL OPCHndlrMMX_PConv(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.bDBit = 1;
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.bDBit = 1;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 	// src opsize is 32bits only for PUNPCKL{BW,WD,DQ}
 	if(bOpcode == 0x60 || bOpcode == 0x61 || bOpcode == 0x62)
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
 	else
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
-	insCurIns.bOperandSizeDes = OPERANDSIZE_MMX64;
-	insCurIns.bRegTypeDest = insCurIns.bRegTypeSrc = REGTYPE_MMX;
-	dsNextState = DASM_STATE_MOD_RM;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
+	pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_MMX64;
+	pstState->insCurIns.bRegTypeDest = pstState->insCurIns.bRegTypeSrc = REGTYPE_MMX;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
 /* ** P{AND,ANDN,OR,XOR} **
  * Same as arithmetic instructions.
  */
-BOOL OPCHndlrMMX_PLogical(BYTE bOpcode)
+BOOL OPCHndlrMMX_PLogical(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.bDBit = 1;
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	insCurIns.bOperandSizeSrc = insCurIns.bOperandSizeDes = OPERANDSIZE_MMX64;
-	insCurIns.bRegTypeDest = insCurIns.bRegTypeSrc = REGTYPE_MMX;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.bDBit = 1;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.bOperandSizeSrc = pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_MMX64;
+	pstState->insCurIns.bRegTypeDest = pstState->insCurIns.bRegTypeSrc = REGTYPE_MMX;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -8803,7 +9767,7 @@ BOOL OPCHndlrMMX_PLogical(BYTE bOpcode)
  * 0F 71 /4 ib PSRAW mm, imm8		Shift words in mm right by imm8 while shifting in sign bits 
  * 0F 72 /4 ib PSRAD mm, imm8		Shift doublewords in mm right by imm8 while shifting in sign bits.
  */
-BOOL OPCHndlrMMX_PShift(BYTE bOpcode)
+BOOL OPCHndlrMMX_PShift(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -8811,21 +9775,21 @@ BOOL OPCHndlrMMX_PShift(BYTE bOpcode)
 
 	// only 71h,72h,73h opcodes have an immediate operand
 
-	insCurIns.bDBit = 1;
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bDBit = 1;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.fModRM = TRUE;
 	if(bOpcode == 0x71 || bOpcode == 0x72 || bOpcode == 0x73)
 	{
-		insCurIns.bModRMType = MODRM_TYPE_DIGIT;
-		insCurIns.fImm = TRUE;
-		insCurIns.bImmType = IMM_8BIT;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+		pstState->insCurIns.fImm = TRUE;
+		pstState->insCurIns.bImmType = IMM_8BIT;
 	}
 	else
-		insCurIns.bModRMType = MODRM_TYPE_R;
+		pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 	
-	insCurIns.bOperandSizeSrc = insCurIns.bOperandSizeDes = OPERANDSIZE_MMX64;
-	insCurIns.bRegTypeDest = insCurIns.bRegTypeSrc = REGTYPE_MMX;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.bOperandSizeSrc = pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_MMX64;
+	pstState->insCurIns.bRegTypeDest = pstState->insCurIns.bRegTypeSrc = REGTYPE_MMX;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -8835,7 +9799,7 @@ BOOL OPCHndlrMMX_PShift(BYTE bOpcode)
  *	72	psrld	psrad	pslld
  *	73	psrlq			psllq
  */
-BOOL OPCHndlrMMX_PMulti7x(BYTE bOpcode)	// 
+BOOL OPCHndlrMMX_PMulti7x(PDASMSTATE pstState, BYTE bOpcode)	// 
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -8850,15 +9814,15 @@ BOOL OPCHndlrMMX_PMulti7x(BYTE bOpcode)	//
 	INT iIndex;
 
 	// get the 'reg' field from the ModRM byte
-	Util_vSplitModRMByte(*pByteInCode, NULL, &bOpcodeEx, NULL);
+	Util_vSplitModRMByte(*pstState->pbCurrentCodePtr, NULL, &bOpcodeEx, NULL);
 
 	ASSERT(bOpcodeEx == 2 ||bOpcodeEx == 4 || bOpcodeEx == 6);	// assert always?
 
 	bOpcodeEx = bOpcodeEx/2 - 1;	// get zero-based index
 	iIndex = (bOpcode - 0x71) * 3 + bOpcodeEx;
-	StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), awszMnemonics[iIndex]);
+	StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), awszMnemonics[iIndex]);
 
-	return OPCHndlrMMX_PShift(bOpcode);
+	return OPCHndlrMMX_PShift(pstState, bOpcode);
 }
 
 /*	** MOVx **
@@ -8868,7 +9832,7 @@ BOOL OPCHndlrMMX_PMulti7x(BYTE bOpcode)	//
  * 0F 6F /r MOVQ mm, mm/m64		Move quadword from mm/m64 to mm.
  * 0F 7F /r MOVQ mm/m64, mm		Move quadword from mm to mm/m64.
  */
-BOOL OPCHndlrMMX_PMov(BYTE bOpcode)
+BOOL OPCHndlrMMX_PMov(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -8876,54 +9840,54 @@ BOOL OPCHndlrMMX_PMov(BYTE bOpcode)
 
 	// d-bit must be 1 for load and 0 for store instructions
 
-	//insCurIns.bDBit = 1;	// always
+	//pstState->insCurIns.bDBit = 1;	// always
 
-	switch(bOpcodeHigh)
+	switch(pstState->bOpcodeHigh)
 	{
 		case 0x6:	// des = mm; src = r/m32 OR mm/m64	LOAD
 		{
-			insCurIns.bDBit = 1;
-			insCurIns.bRegTypeDest = REGTYPE_MMX;
-			insCurIns.bOperandSizeDes = OPERANDSIZE_MMX64;
-			if(bOpcodeLow == 0xE)
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;	// used by MODRM only if mem-loc is des
+			pstState->insCurIns.bDBit = 1;
+			pstState->insCurIns.bRegTypeDest = REGTYPE_MMX;
+			pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_MMX64;
+			if(pstState->bOpcodeLow == 0xE)
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;	// used by MODRM only if mem-loc is des
 			else
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;	// used by MODRM only if mem-loc is des
-				insCurIns.bRegTypeSrc = REGTYPE_MMX;	// only if des is a reg
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;	// used by MODRM only if mem-loc is des
+				pstState->insCurIns.bRegTypeSrc = REGTYPE_MMX;	// only if des is a reg
 			}
 			break;
 		}
 
 		case 0x7:	// src = mm; des = r/m32 OR mm/m64	STORE
 		{
-			insCurIns.bDBit = 0;
-			insCurIns.bRegTypeSrc = REGTYPE_MMX;
-			if(bOpcodeLow == 0xE)
-				insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;	// used by MODRM only if mem-loc is src
+			pstState->insCurIns.bDBit = 0;
+			pstState->insCurIns.bRegTypeSrc = REGTYPE_MMX;
+			if(pstState->bOpcodeLow == 0xE)
+				pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;	// used by MODRM only if mem-loc is src
 			else
 			{
-				insCurIns.bOperandSizeDes = OPERANDSIZE_MMX64;	// used by MODRM only if mem-loc is src
-				insCurIns.bRegTypeDest = REGTYPE_MMX;	// only if des is a reg
+				pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_MMX64;	// used by MODRM only if mem-loc is src
+				pstState->insCurIns.bRegTypeDest = REGTYPE_MMX;	// only if des is a reg
 			}
 			break;
 		}
-	}// switch(bOpcodeHigh)
+	}// switch(pstState->bOpcodeHigh)
 
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
-BOOL OPCHndlrMMX_EMMS(BYTE bOpcode)
+BOOL OPCHndlrMMX_EMMS(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
@@ -8931,21 +9895,21 @@ BOOL OPCHndlrMMX_EMMS(BYTE bOpcode)
  * 0F 70 /r ib PSHUFW mm1, mm2/m64, imm8 
  * Shuffle the words in MM2/Mem based on the encoding in imm8 and store in MM1.
  */
-BOOL OPCHndlrMMX_PSHUFW(BYTE bOpcode)
+BOOL OPCHndlrMMX_PSHUFW(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.bDBit = 1;
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.fImm = TRUE;
-	insCurIns.bImmType = IMM_8BIT;
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	insCurIns.bOperandSizeSrc = insCurIns.bOperandSizeDes = OPERANDSIZE_MMX64;
-	insCurIns.bRegTypeDest = insCurIns.bRegTypeSrc = REGTYPE_MMX;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.bDBit = 1;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.fImm = TRUE;
+	pstState->insCurIns.bImmType = IMM_8BIT;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.bOperandSizeSrc = pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_MMX64;
+	pstState->insCurIns.bRegTypeDest = pstState->insCurIns.bRegTypeSrc = REGTYPE_MMX;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -8954,23 +9918,23 @@ BOOL OPCHndlrMMX_PSHUFW(BYTE bOpcode)
  * Insert the word from the lower half of r32 or from Mem16 into the
  * position in MM pointed to by imm8 without touching the other words.
  */
-BOOL OPCHndlrMMX_PINSRW(BYTE bOpcode)
+BOOL OPCHndlrMMX_PINSRW(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.bDBit = 1;
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.fImm = TRUE;
-	insCurIns.bImmType = IMM_8BIT;
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	insCurIns.bOperandSizeDes = OPERANDSIZE_MMX64;	// doesn't matter since it is a MMX register
-	insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;	// m16
-	insCurIns.bRegTypeDest = REGTYPE_MMX;
-	insCurIns.bRegTypeSrc = REGTYPE_GREG;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.bDBit = 1;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.fImm = TRUE;
+	pstState->insCurIns.bImmType = IMM_8BIT;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_MMX64;	// doesn't matter since it is a MMX register
+	pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_16BIT;	// m16
+	pstState->insCurIns.bRegTypeDest = REGTYPE_MMX;
+	pstState->insCurIns.bRegTypeSrc = REGTYPE_GREG;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -8978,69 +9942,69 @@ BOOL OPCHndlrMMX_PINSRW(BYTE bOpcode)
  * 0F C5 /r ib PEXTRW r32, mm, imm8 
  * Extract the word pointed to by imm8 from MM and move it to a 32-bit integer register.
  */
-BOOL OPCHndlrMMX_PEXTRW(BYTE bOpcode)
+BOOL OPCHndlrMMX_PEXTRW(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.bDBit = 1;
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.fImm = TRUE;
-	insCurIns.bImmType = IMM_8BIT;
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
-	insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
-	insCurIns.bRegTypeDest = REGTYPE_GREG;
-	insCurIns.bRegTypeSrc = REGTYPE_MMX;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.bDBit = 1;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.fImm = TRUE;
+	pstState->insCurIns.bImmType = IMM_8BIT;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
+	pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
+	pstState->insCurIns.bRegTypeDest = REGTYPE_GREG;
+	pstState->insCurIns.bRegTypeSrc = REGTYPE_MMX;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
 /*	** PMOVMSKB **
  * 0F D7 /r		PMOVMSKB r32, mm	Move the byte mask of MM to r32.
  */
-BOOL OPCHndlrMMX_PMOVMSKB(BYTE bOpcode)
+BOOL OPCHndlrMMX_PMOVMSKB(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.bDBit = 1;
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
+	pstState->insCurIns.bDBit = 1;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
 	/*
 	 * No need to set src opsize because it is always a MMX register.
 	 */
-	insCurIns.bRegTypeDest = REGTYPE_GREG;
-	insCurIns.bRegTypeSrc = REGTYPE_MMX;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.bRegTypeDest = REGTYPE_GREG;
+	pstState->insCurIns.bRegTypeSrc = REGTYPE_MMX;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
 /*	** **
  * Same as arithmetic instructions.
  */
-BOOL OPCHndlrMMX_PMaxMinAvg(BYTE bOpcode)	// PMINUB/PMAXUB/PMINSW/PMAXSW/PAVGB/PVGW
+BOOL OPCHndlrMMX_PMaxMinAvg(PDASMSTATE pstState, BYTE bOpcode)	// PMINUB/PMAXUB/PMINSW/PMAXSW/PAVGB/PVGW
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.bDBit = 1;
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
+	pstState->insCurIns.bDBit = 1;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
 	/*
 	 * No need to set des opsize because it is always a MMX register.
 	 * Src maybe a MMX reg/m64 mem-loc.
 	 */
-	insCurIns.bRegTypeDest = insCurIns.bRegTypeSrc = REGTYPE_MMX;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.bRegTypeDest = pstState->insCurIns.bRegTypeSrc = REGTYPE_MMX;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -9051,104 +10015,104 @@ BOOL OPCHndlrMMX_PMaxMinAvg(BYTE bOpcode)	// PMINUB/PMAXUB/PMINSW/PMAXSW/PAVGB/P
 /*
  * 66 0F 5E /r	DIVPD xmm1, xmm2/m128
  */
-BOOL OPCHndlrSSE_Arith(BYTE bOpcode)
+BOOL OPCHndlrSSE_Arith(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.bDBit = 1;
-	insCurIns.fSSEIns = TRUE;
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.bRegTypeDest = insCurIns.bRegTypeSrc = REGTYPE_XMM;
+	pstState->insCurIns.bDBit = 1;
+	pstState->insCurIns.fSSEIns = TRUE;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.bRegTypeDest = pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
 
 	switch(bOpcode)
 	{
 		case 0x58:	// add
 		{
-			if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
+			if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"addss");
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"addss");
 			}
-			else if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF2)
+			else if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF2)
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"addsd");
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"addsd");
 			}
-			else if(insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
+			else if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"addpd");
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"addpd");
 			}
 			else
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
 			break;
 		}
 
 		case 0x59:	// mul
 		{
-			if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
+			if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"mulss");
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"mulss");
 			}
-			else if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF2)
+			else if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF2)
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"mulsd");
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"mulsd");
 			}
-			else if(insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
+			else if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"mulpd");
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"mulpd");
 			}
 			else
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
 			break;
 		}
 
 		case 0x5C:	// sub
 		{
-			if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
+			if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"subss");
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"subss");
 			}
-			else if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF2)
+			else if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF2)
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"subsd");
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"subsd");
 			}
-			else if(insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
+			else if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"subpd");
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"subpd");
 			}
 			else
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
 			break;
 		}
 
 		case 0x5E:	// div
 		{
-			if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
+			if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"divss");
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"divss");
 			}
-			else if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF2)
+			else if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF2)
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"divsd");
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"divsd");
 			}
-			else if(insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
+			else if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"divpd");
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"divpd");
 			}
 			else
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
 			break;
 		}
 
@@ -9158,10 +10122,10 @@ BOOL OPCHndlrSSE_Arith(BYTE bOpcode)
 	}// switch(bOpcode)
 
 
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 }
 
@@ -9187,57 +10151,57 @@ BOOL OPCHndlrSSE_Arith(BYTE bOpcode)
  * 0F 2E	/r UCOMISS xmm1,xmm2/m32
  * 66 0F 2E /r UCOMISD xmm1, xmm2/m64
  */
-BOOL OPCHndlrSSE_Cmp(BYTE bOpcode)
+BOOL OPCHndlrSSE_Cmp(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.bDBit = 1;
-	insCurIns.fSSEIns = TRUE;
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.bRegTypeDest = insCurIns.bRegTypeSrc = REGTYPE_XMM;
+	pstState->insCurIns.bDBit = 1;
+	pstState->insCurIns.fSSEIns = TRUE;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.bRegTypeDest = pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
 
 	switch(bOpcode)
 	{
 		case 0x2E:	// UCOMISS/UCOMISD
-			if(insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
+			if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
 			{
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"ucomisd");
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"ucomisd");
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
 			}
 			else
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
 			break;
 
 		case 0x2F:	// COMISS/COMISD
-			if(insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
+			if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
 			{
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"comisd");
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"comisd");
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
 			}
 			else
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
 			break;
 
 		case 0xC2:	// CMPPS or CMPSS
 		{
-			insCurIns.fImm = TRUE;
-			insCurIns.bImmType = IMM_8BIT;
+			pstState->insCurIns.fImm = TRUE;
+			pstState->insCurIns.bImmType = IMM_8BIT;
 
-			if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
+			if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
 			{
 				// CMPSS
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
 			}
-			else if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF2)
+			else if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF2)
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
 			}
 			else
 			{
 				// CMPPS or CMPPD
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
 			}
 			break;
 		}// case 0xC2
@@ -9251,11 +10215,11 @@ BOOL OPCHndlrSSE_Cmp(BYTE bOpcode)
 	}// switch(bOpcode)
 	
 	// set the callback function pointer
-	insCurIns.fpvCallback = vCALLBACK_SSECmp;
+	pstState->insCurIns.fpvCallback = vCALLBACK_SSECmp;
 	
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 
 	return TRUE;
 }
@@ -9265,7 +10229,7 @@ BOOL OPCHndlrSSE_Cmp(BYTE bOpcode)
  * read the value of the immediate byte.
  */
 
-void vCALLBACK_SSECmp()
+void vCALLBACK_SSECmp(PDASMSTATE pstState)
 {
 	static WCHAR awszCMPPSMnemonics[][MAX_OPCODE_NAME_LEN+1] = 
 					{ L"cmpeqps", L"cmpltps", L"cmpleps", L"cmpunordps",
@@ -9283,36 +10247,36 @@ void vCALLBACK_SSECmp()
 					{ L"cmpeqsd", L"cmpltsd", L"cmplesd", L"cmpunordsd",
 						L"cmpneqsd", L"cmpnltsd", L"cmpnlesd", L"cmpordsd" };
 
-	if(insCurIns.iImm < 0 || insCurIns.iImm > 7)
+	if(pstState->insCurIns.iImm < 0 || pstState->insCurIns.iImm > 7)
 	{
-		wprintf_s(L"vCALLBACK_SSECmp(): Invalid imm value for CMPSS/CMPPS: %d\n", insCurIns.iImm);
+		wprintf_s(L"vCALLBACK_SSECmp(): Invalid imm value for CMPSS/CMPPS: %d\n", pstState->insCurIns.iImm);
 		return;
 	}
 
 	// Now that we have a valid imm value, set the proper instruction mnemonic
-	if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
+	if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
 	{
 		// CMPSS
-		StringCchCopy(wszCurInsStr, _countof(wszCurInsStr), awszCMPSSMnemonics[insCurIns.iImm]);
+		StringCchCopy(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), awszCMPSSMnemonics[pstState->insCurIns.iImm]);
 	}
-	else if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF2)
+	else if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF2)
 	{
 		// CMPSD
-		StringCchCopy(wszCurInsStr, _countof(wszCurInsStr), awszCMPSDMnemonics[insCurIns.iImm]);
+		StringCchCopy(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), awszCMPSDMnemonics[pstState->insCurIns.iImm]);
 	}
-	else if(insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
+	else if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
 	{
 		// CMPPD
-		StringCchCopy(wszCurInsStr, _countof(wszCurInsStr), awszCMPPDMnemonics[insCurIns.iImm]);
+		StringCchCopy(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), awszCMPPDMnemonics[pstState->insCurIns.iImm]);
 	}
 	else
 	{
 		// CMPPS
-		StringCchCopy(wszCurInsStr, _countof(wszCurInsStr), awszCMPPSMnemonics[insCurIns.iImm]);
+		StringCchCopy(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), awszCMPPSMnemonics[pstState->insCurIns.iImm]);
 	}
 
 	// Clear fImm so that the immediate is not printed by the DUMP state
-	insCurIns.fImm = FALSE;
+	pstState->insCurIns.fImm = FALSE;
 
 	return;
 }
@@ -9343,137 +10307,137 @@ void vCALLBACK_SSECmp()
  * F2 0F E6	/r		CVTPD2DQ xmm1, xmm2/m128	; fp to dword ints
  * 66 0F E6	/r		CVTTPD2DQ xmm1, xmm2/m128	; with truncation
  */
-BOOL OPCHndlrSSE_Conv(BYTE bOpcode)
+BOOL OPCHndlrSSE_Conv(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.bDBit = 1;
-	insCurIns.fSSEIns = TRUE;
-	insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.bDBit = 1;
+	pstState->insCurIns.fSSEIns = TRUE;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
 	
 	switch(bOpcode)
 	{
 		case 0x14:
 		case 0x15:
-			insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
-			insCurIns.bRegTypeDest = insCurIns.bRegTypeSrc = REGTYPE_XMM;
+			pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
+			pstState->insCurIns.bRegTypeDest = pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
 			break;
 
 		case 0x2A:
-			insCurIns.bRegTypeDest = REGTYPE_XMM;
-			if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
+			pstState->insCurIns.bRegTypeDest = REGTYPE_XMM;
+			if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
 			{
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"cvtsi2ss");
-				insCurIns.bRegTypeSrc = REGTYPE_GREG;
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"cvtsi2ss");
+				pstState->insCurIns.bRegTypeSrc = REGTYPE_GREG;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
 			}
-			else if(insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
+			else if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
 			{
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"cvtpi2pd");
-				insCurIns.bRegTypeSrc = REGTYPE_MMX;
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"cvtpi2pd");
+				pstState->insCurIns.bRegTypeSrc = REGTYPE_MMX;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
 			}
 			else
 			{
-				insCurIns.bRegTypeSrc = REGTYPE_MMX;
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
+				pstState->insCurIns.bRegTypeSrc = REGTYPE_MMX;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
 			}
 			break;
 
 		case 0x2C:
 		{
-			if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
+			if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
 			{
 				// CVTTSS2SI
-				insCurIns.bRegTypeDest = REGTYPE_GREG;
-				insCurIns.bRegTypeSrc = REGTYPE_XMM;
-				insCurIns.bOperandSizeSrc = insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"cvttss2si");
+				pstState->insCurIns.bRegTypeDest = REGTYPE_GREG;
+				pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
+				pstState->insCurIns.bOperandSizeSrc = pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"cvttss2si");
 			}
 			else
 			{
-				insCurIns.bRegTypeDest = REGTYPE_MMX;
-				insCurIns.bRegTypeSrc = REGTYPE_XMM;
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
+				pstState->insCurIns.bRegTypeDest = REGTYPE_MMX;
+				pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
 			}
 			break;
 		}
 
 		case 0x2D:
 		{
-			insCurIns.bRegTypeDest = REGTYPE_MMX;
-			insCurIns.bRegTypeSrc = REGTYPE_XMM;
-			if(insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
+			pstState->insCurIns.bRegTypeDest = REGTYPE_MMX;
+			pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
+			if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
 			{
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"cvtpd2pi");
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"cvtpd2pi");
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
 			}
-			else if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF2)
+			else if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF2)
 			{
 				// F2 0F 2D /r		CVTSD2SI r32, xmm/m64
-				insCurIns.bRegTypeDest = REGTYPE_GREG;
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
-				insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"cvtsd2si");
+				pstState->insCurIns.bRegTypeDest = REGTYPE_GREG;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
+				pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"cvtsd2si");
 			}
 			else
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
 			break;
 		}
 
 		case 0x5A:	// 66 0F 5A /r		CVTPD2PS xmm1, xmm2/m128
 					// F2 0F 5A /r		CVTSD2SS xmm1, xmm2/m64
 		{
-			insCurIns.bRegTypeDest = insCurIns.bRegTypeSrc = REGTYPE_XMM;
-			if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF2)
+			pstState->insCurIns.bRegTypeDest = pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
+			if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF2)
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"cvtsd2ss");
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"cvtsd2ss");
 			}
-			else if(insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
+			else if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"cvtpd2ps");
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"cvtpd2ps");
 			}
 			else	// 0F 5A	/r		CVTPS2PD xmm1, xmm2/m64
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
 			break;
 		}
 
 		case 0x5B:
 		{
-			insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
-			insCurIns.bRegTypeDest = insCurIns.bRegTypeSrc = REGTYPE_XMM;
-			if(insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"cvtps2dq");
+			pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
+			pstState->insCurIns.bRegTypeDest = pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
+			if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"cvtps2dq");
 			break;
 		}
 
 		case 0xE6:
 		{
-			insCurIns.bRegTypeDest = insCurIns.bRegTypeSrc = REGTYPE_XMM;
-			if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF2)
+			pstState->insCurIns.bRegTypeDest = pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
+			if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF2)
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"cvtpd2dq");
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"cvtpd2dq");
 			}
-			else if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
+			else if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"cvtdq2pd");
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_MMX64;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"cvtdq2pd");
 			}
 			else
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
 			break;
 		}
 
 	}// switch(bOpcode)
 
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 
 	return TRUE;
 }
@@ -9486,32 +10450,32 @@ BOOL OPCHndlrSSE_Conv(BYTE bOpcode)
  * SSE2:
  * ANDNPD
  */
-BOOL OPCHndlrSSE_Logical(BYTE bOpcode)
+BOOL OPCHndlrSSE_Logical(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.bDBit = 1;
-	insCurIns.fSSEIns = TRUE;
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.bRegTypeDest = insCurIns.bRegTypeSrc = REGTYPE_XMM;
-	if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+	pstState->insCurIns.bDBit = 1;
+	pstState->insCurIns.fSSEIns = TRUE;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.bRegTypeDest = pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
+	if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
 	else
-		insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
+		pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
 
 	switch(bOpcode)
 	{
 		case 0x55: 
-			if(insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"andnpd");
+			if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_OPSIZE] == OPC_PREFIX_OPSIZE)
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"andnpd");
 			break;
 	}
 
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 
 	return TRUE;
 }
@@ -9533,16 +10497,16 @@ BOOL OPCHndlrSSE_Logical(BYTE bOpcode)
  ; 0.
  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
  */
-BOOL OPCHndlrSSE_Mov(BYTE bOpcode)
+BOOL OPCHndlrSSE_Mov(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.fSSEIns = TRUE;
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.fSSEIns = TRUE;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 
 	// dbit may be of significance too: load->d=1, store->d=0
 	// regtype may be MMX/XMM/GREG
@@ -9552,123 +10516,123 @@ BOOL OPCHndlrSSE_Mov(BYTE bOpcode)
 	{
 		case 0x10:	// load:xmm/m 128/32 MOVUPS, MOVSS
 		{
-			insCurIns.bDBit = 1;
-			insCurIns.bRegTypeDest = insCurIns.bRegTypeSrc = REGTYPE_XMM;
-			if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
+			pstState->insCurIns.bDBit = 1;
+			pstState->insCurIns.bRegTypeDest = pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
+			if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
 			{
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"movss");
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"movss");
 			}
 			else
-				insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
+				pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
 			break;
 		}
 
 		case 0x11:	// store:xmm/m 128/32 MOVUPS, MOVSS
 		{
-			insCurIns.bDBit = 0;
-			insCurIns.bRegTypeDest = insCurIns.bRegTypeSrc = REGTYPE_XMM;
-			if(insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
+			pstState->insCurIns.bDBit = 0;
+			pstState->insCurIns.bRegTypeDest = pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
+			if(pstState->insCurIns.abPrefixes[PREFIX_INDEX_LOCKREP] == OPC_PREFIX_SIMDF3)
 			{
-				insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"movss");
+				pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"movss");
 			}
 			else
-				insCurIns.bOperandSizeDes = OPERANDSIZE_SSE128;
+				pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_SSE128;
 			break;
 		}
 
 		case 0x12:	// load:m64 MOVLPS, MOVHLPS
 		{
-			insCurIns.bDBit = 1;
-			insCurIns.bRegTypeDest = REGTYPE_XMM;
+			pstState->insCurIns.bDBit = 1;
+			pstState->insCurIns.bRegTypeDest = REGTYPE_XMM;
 
 			// if ModRM byte specifies both register operands, it is a MOVHLPS instruction
-			if(*pByteInCode >= 0xC0 && *pByteInCode <= 0xFF)
+			if(*pstState->pbCurrentCodePtr >= 0xC0 && *pstState->pbCurrentCodePtr <= 0xFF)
 			{
-				insCurIns.bRegTypeSrc = REGTYPE_XMM;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"movhlps");
+				pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"movhlps");
 			}
-			insCurIns.bOperandSizeSrc = OPERANDSIZE_64BIT;
+			pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_64BIT;
 			break;
 		}
 
 		case 0x13:	// store:m64 MOVLPS
 		{
-			insCurIns.bDBit = 0;
-			insCurIns.bRegTypeSrc = REGTYPE_XMM;
-			insCurIns.bOperandSizeDes = OPERANDSIZE_64BIT;
+			pstState->insCurIns.bDBit = 0;
+			pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
+			pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_64BIT;
 			break;
 		}
 
 		case 0x16:	// load:m64 MOVHPS, MOVLHPS
 		{
-			insCurIns.bDBit = 1;
-			insCurIns.bRegTypeDest = REGTYPE_XMM;
+			pstState->insCurIns.bDBit = 1;
+			pstState->insCurIns.bRegTypeDest = REGTYPE_XMM;
 
 			// if ModRM byte specifies both register operands, it is a MOVLHPS instruction
-			if(*pByteInCode >= 0xC0 && *pByteInCode <= 0xFF)
+			if(*pstState->pbCurrentCodePtr >= 0xC0 && *pstState->pbCurrentCodePtr <= 0xFF)
 			{
-				insCurIns.bRegTypeSrc = REGTYPE_XMM;
-				StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"movlhps");
+				pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
+				StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"movlhps");
 			}
-			insCurIns.bOperandSizeSrc = OPERANDSIZE_64BIT;
+			pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_64BIT;
 			break;
 		}
 
 		case 0x17:	// store:m64 MOVHPS
 		{
-			insCurIns.bDBit = 0;
-			insCurIns.bRegTypeSrc = REGTYPE_XMM;
-			insCurIns.bOperandSizeDes = OPERANDSIZE_64BIT;
+			pstState->insCurIns.bDBit = 0;
+			pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
+			pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_64BIT;
 			break;
 		}
 
 		case 0x28:	// load:xmm/m128 MOVAPS
 		{
-			insCurIns.bDBit = 1;
-			insCurIns.bRegTypeDest = insCurIns.bRegTypeSrc = REGTYPE_XMM;
-			insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
+			pstState->insCurIns.bDBit = 1;
+			pstState->insCurIns.bRegTypeDest = pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
+			pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
 			break;
 		}
 
 		case 0x29:	// store:xmm/m128 MOVAPS
 		{
-			insCurIns.bDBit = 0;
-			insCurIns.bRegTypeSrc = insCurIns.bRegTypeSrc = REGTYPE_XMM;
-			insCurIns.bOperandSizeDes = OPERANDSIZE_SSE128;
+			pstState->insCurIns.bDBit = 0;
+			pstState->insCurIns.bRegTypeSrc = pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
+			pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_SSE128;
 			break;
 		}
 
 		case 0x2B:	// store:m128 MOVNTPS
 		{
-			insCurIns.bDBit = 0;
-			insCurIns.bRegTypeSrc = REGTYPE_XMM;
-			insCurIns.bOperandSizeDes = OPERANDSIZE_SSE128;
+			pstState->insCurIns.bDBit = 0;
+			pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
+			pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_SSE128;
 			break;
 		}
 
 		case 0x50:	// r32<-xmm MOVMSKPS d=1 verified
 		{
-			insCurIns.bDBit = 1;
-			insCurIns.bRegTypeSrc = REGTYPE_XMM;
-			insCurIns.bRegTypeDest = REGTYPE_GREG;
-			insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;	// required for GPR
+			pstState->insCurIns.bDBit = 1;
+			pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
+			pstState->insCurIns.bRegTypeDest = REGTYPE_GREG;
+			pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_32BIT;	// required for GPR
 			break;
 		}
 
 		case 0xE7:	// m64<-mm MOVNTQ d=0
 		{
-			insCurIns.bDBit = 0;
-			insCurIns.bRegTypeSrc = REGTYPE_MMX;
-			insCurIns.bOperandSizeDes = OPERANDSIZE_64BIT;
+			pstState->insCurIns.bDBit = 0;
+			pstState->insCurIns.bRegTypeSrc = REGTYPE_MMX;
+			pstState->insCurIns.bOperandSizeDes = OPERANDSIZE_64BIT;
 			break;
 		}
 
 		case 0xF7:	// mm<-mm MASKMOVQ d=1
 		{
-			insCurIns.bDBit = 1;
-			insCurIns.bRegTypeSrc = insCurIns.bRegTypeDest = REGTYPE_MMX;
+			pstState->insCurIns.bDBit = 1;
+			pstState->insCurIns.bRegTypeSrc = pstState->insCurIns.bRegTypeDest = REGTYPE_MMX;
 			break;
 		}
 
@@ -9678,7 +10642,7 @@ BOOL OPCHndlrSSE_Mov(BYTE bOpcode)
 
 	}// switch(bOpcode)
 
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 
 	return TRUE;
 }
@@ -9686,24 +10650,24 @@ BOOL OPCHndlrSSE_Mov(BYTE bOpcode)
 /*	** SHUFPS **
  * 0F C6 /r ib	SHUFPS xmm1,xmm2/m128,imm8		Shuffle Single.
  */
-BOOL OPCHndlrSSE_SHUFPS(BYTE bOpcode)
+BOOL OPCHndlrSSE_SHUFPS(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
 	#endif
 
-	insCurIns.bDBit = 1;
-	insCurIns.fSSEIns = TRUE;
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.bRegTypeDest = insCurIns.bRegTypeSrc = REGTYPE_XMM;
-	insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
+	pstState->insCurIns.bDBit = 1;
+	pstState->insCurIns.fSSEIns = TRUE;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.bRegTypeDest = pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
+	pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
 
-	insCurIns.fImm = TRUE;
-	insCurIns.bImmType = IMM_8BIT;
+	pstState->insCurIns.fImm = TRUE;
+	pstState->insCurIns.bImmType = IMM_8BIT;
 
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 
 	return TRUE;
 }
@@ -9715,7 +10679,7 @@ BOOL OPCHndlrSSE_SHUFPS(BYTE bOpcode)
  * STMXCSR	/3		m32
  * SFENCE	/7
  */
-BOOL OPCHndlrSSE_MultiAE(BYTE bOpcode)	// FXSAVE/FXRSTOR/LDMXCSR/STMXCSR/SFENCE
+BOOL OPCHndlrSSE_MultiAE(PDASMSTATE pstState, BYTE bOpcode)	// FXSAVE/FXRSTOR/LDMXCSR/STMXCSR/SFENCE
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -9728,13 +10692,13 @@ BOOL OPCHndlrSSE_MultiAE(BYTE bOpcode)	// FXSAVE/FXRSTOR/LDMXCSR/STMXCSR/SFENCE
 	BYTE bOpcodeEx = 0xff;
 
 	// Get the opcode extension
-	Util_vSplitModRMByte(*pByteInCode, NULL, &bOpcodeEx, NULL);
+	Util_vSplitModRMByte(*pstState->pbCurrentCodePtr, NULL, &bOpcodeEx, NULL);
 
-	insCurIns.bDBit = 1;
-	insCurIns.fSSEIns = TRUE;
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+	pstState->insCurIns.bDBit = 1;
+	pstState->insCurIns.fSSEIns = TRUE;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
 
 	// Not performing bound checks for bOpcodeEx because I have
 	// accessed the awszARMnemonics array within the switch cases
@@ -9744,21 +10708,21 @@ BOOL OPCHndlrSSE_MultiAE(BYTE bOpcode)	// FXSAVE/FXRSTOR/LDMXCSR/STMXCSR/SFENCE
 	{
 		case 0:
 		case 1:
-			StringCchCopy(wszCurInsStr, _countof(wszCurInsStr), awszAEMnemonics[bOpcodeEx]);
-			// insCurIns.bOperandSizeSrc = OPERANDSIZE_UNDEF;	// m512 so no ptrstr
-			dsNextState = DASM_STATE_MOD_RM;
+			StringCchCopy(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), awszAEMnemonics[bOpcodeEx]);
+			// pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_UNDEF;	// m512 so no ptrstr
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		case 2:
 		case 3:
-			StringCchCopy(wszCurInsStr, _countof(wszCurInsStr), awszAEMnemonics[bOpcodeEx]);
-			insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
-			dsNextState = DASM_STATE_MOD_RM;
+			StringCchCopy(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), awszAEMnemonics[bOpcodeEx]);
+			pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_32BIT;
+			pstState->dsNextState = DASM_STATE_MOD_RM;
 			break;
 
 		case 7:
-			StringCchCopy(wszCurInsStr, _countof(wszCurInsStr), awszAEMnemonics[bOpcodeEx]);
-			dsNextState = DASM_STATE_DUMP;
+			StringCchCopy(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), awszAEMnemonics[bOpcodeEx]);
+			pstState->dsNextState = DASM_STATE_DUMP;
 			break;
 
 		default:
@@ -9775,7 +10739,7 @@ BOOL OPCHndlrSSE_MultiAE(BYTE bOpcode)	// FXSAVE/FXRSTOR/LDMXCSR/STMXCSR/SFENCE
  * 0F 18 /3 PREFETCHT2 m8		Move data specified by address closer to the processor using the t2 hint.
  * 0F 18 /0 PREFETCHTNTA m8		Move data specified by address closer to the processor using the nta hint.
  */
-BOOL OPCHndlrSSE_Prefetch18(BYTE bOpcode)	// 0F 18 PREFETCH{T0,T1,T2,NTA}
+BOOL OPCHndlrSSE_Prefetch18(PDASMSTATE pstState, BYTE bOpcode)	// 0F 18 PREFETCH{T0,T1,T2,NTA}
 {
 	#ifdef _DEBUG
 		wprintf_s(L"%s(): %xh\n", __FUNCTIONW__, bOpcode);
@@ -9786,13 +10750,13 @@ BOOL OPCHndlrSSE_Prefetch18(BYTE bOpcode)	// 0F 18 PREFETCH{T0,T1,T2,NTA}
 
 	BYTE bOpcodeEx;
 
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_DIGIT;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_DIGIT;
 
-	// insCurIns.bOperandSizeSrc = OPERANDSIZE_UNDEF;	// dumpbin says so
+	// pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_UNDEF;	// dumpbin says so
 
-	Util_vSplitModRMByte(*pByteInCode, NULL, &bOpcodeEx, NULL);
+	Util_vSplitModRMByte(*pstState->pbCurrentCodePtr, NULL, &bOpcodeEx, NULL);
 	
 	// No need to check < 0 because bOpcodeEx is unsigned char
 	if(bOpcodeEx > 3)
@@ -9801,8 +10765,8 @@ BOOL OPCHndlrSSE_Prefetch18(BYTE bOpcode)	// 0F 18 PREFETCH{T0,T1,T2,NTA}
 		return FALSE;
 	}
 
-	StringCchCopy(wszCurInsStr, _countof(wszCurInsStr), awszPrefMnemonics[bOpcodeEx]);
-	dsNextState = DASM_STATE_MOD_RM;
+	StringCchCopy(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), awszPrefMnemonics[bOpcodeEx]);
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 
 	return TRUE;
 }
@@ -9815,7 +10779,7 @@ BOOL OPCHndlrSSE_Prefetch18(BYTE bOpcode)	// 0F 18 PREFETCH{T0,T1,T2,NTA}
  * 66 0F 38 DF /r		AESDECLAST xmm1, xmm2/m128
  * 66 0F 3A DF /r ib	AESKEYGENASSIST xmm1,xmm2/m128, imm8
  */
-BOOL OPCHndlrAES(BYTE bOpcodeThirdByte)
+BOOL OPCHndlrAES(PDASMSTATE pstState, BYTE bOpcodeThirdByte)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"OPCHndlrAES(): %xh\n", bOpcodeThirdByte);
@@ -9826,18 +10790,18 @@ BOOL OPCHndlrAES(BYTE bOpcodeThirdByte)
 
 	INT iIndex = 0;
 
-	insCurIns.bDBit = 1;
-	insCurIns.fSpecialInstruction = TRUE;
-	insCurIns.fSSEIns = TRUE;
-	insCurIns.bRegTypeDest = insCurIns.bRegTypeSrc = REGTYPE_XMM;
-	insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
-	insCurIns.fModRM = TRUE;
-	insCurIns.bModRMType = MODRM_TYPE_R;
+	pstState->insCurIns.bDBit = 1;
+	pstState->insCurIns.fSpecialInstruction = TRUE;
+	pstState->insCurIns.fSSEIns = TRUE;
+	pstState->insCurIns.bRegTypeDest = pstState->insCurIns.bRegTypeSrc = REGTYPE_XMM;
+	pstState->insCurIns.bOperandSizeSrc = OPERANDSIZE_SSE128;
+	pstState->insCurIns.fModRM = TRUE;
+	pstState->insCurIns.bModRMType = MODRM_TYPE_R;
 	if(bOpcodeThirdByte == 0xDF)
 	{
-		insCurIns.fImm = TRUE;
-		insCurIns.bImmType = IMM_8BIT;
-		StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), L"aeskeygenassist");
+		pstState->insCurIns.fImm = TRUE;
+		pstState->insCurIns.bImmType = IMM_8BIT;
+		StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), L"aeskeygenassist");
 	}
 	else
 	{
@@ -9847,48 +10811,48 @@ BOOL OPCHndlrAES(BYTE bOpcodeThirdByte)
 			wprintf_s(L"OPCHndlrAES(): Invalid index %d calculated from opcode byte %xh\n", iIndex, bOpcodeThirdByte);
 			return FALSE;
 		}
-		StringCchPrintf(wszCurInsStr, _countof(wszCurInsStr), awszAESMnemonics[iIndex]);
+		StringCchPrintf(pstState->wszCurInsStr, _countof(pstState->wszCurInsStr), awszAESMnemonics[iIndex]);
 	}
 	
-	dsNextState = DASM_STATE_MOD_RM;
+	pstState->dsNextState = DASM_STATE_MOD_RM;
 	return TRUE;
 
 }// OPCHndlrAES()
 
 // Invalid opcodes handler
-BOOL OPCHndlr_INVALID(BYTE bOpcode)
+BOOL OPCHndlr_INVALID(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"OPCHndlr_INVALID(): %xh\n", bOpcode);
 	#endif
-	dsNextState = DASM_STATE_DUMP;
+	pstState->dsNextState = DASM_STATE_DUMP;
 	return TRUE;
 }
 
 // Instructions I don't know yet
-BOOL OPCHndlrUnKwn_SSE(BYTE bOpcode)
+BOOL OPCHndlrUnKwn_SSE(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"OPCHndlrUnKwn_SSE(): %xh\n", bOpcode);
 	#endif
-	//dsNextState = DASM_STATE_DUMP;
+	//pstState->dsNextState = DASM_STATE_DUMP;
 	return FALSE;
 }
 
-BOOL OPCHndlrUnKwn_MMX(BYTE bOpcode)
+BOOL OPCHndlrUnKwn_MMX(PDASMSTATE pstState, BYTE bOpcode)
 {
 	#ifdef _DEBUG
 		wprintf_s(L"OPCHndlrUnKwn_MMX(): %xh\n", bOpcode);
 	#endif
-	//dsNextState = DASM_STATE_DUMP;
+	//pstState->dsNextState = DASM_STATE_DUMP;
 	return FALSE;
 }
 
-BOOL OPCHndlrUnKwn_(BYTE bOpcode)		// call this when you don't know anything about the opcode
+BOOL OPCHndlrUnKwn_(PDASMSTATE pstState, BYTE bOpcode)		// call this when you don't know anything about the opcode
 {
 	#ifdef _DEBUG
 		wprintf_s(L"OPCHndlrUnKwn_(): %xh\n", bOpcode);
 	#endif
-	// dsNextState = DASM_STATE_DUMP;
+	// pstState->dsNextState = DASM_STATE_DUMP;
 	return FALSE;
 }
