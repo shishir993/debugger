@@ -274,6 +274,24 @@ static BOOL fStartDebugSession(HWND hMainWindow, struct _DbgSessionStart *pstSes
 
     iCurTabIndex = pDebugInfo->stTabPageInfo.iTabIndex;
 
+    WCHAR szPIDToDisplay[SLEN_COMMON32];
+
+    PWCHAR pszTabText = NULL;
+
+    if(pstSessionInfo->fDebuggingActiveProcess)
+    {
+        swprintf_s(szPIDToDisplay, _countof(szPIDToDisplay), L"PID: %u", pstSessionInfo->dwTargetPID);
+        pszTabText = szPIDToDisplay;
+    }
+    else
+    {
+        pszTabText = pszChlSzGetFilenameFromPath(
+                            pstSessionInfo->szTargetPath, 
+                            wcsnlen_s(pstSessionInfo->szTargetPath, _countof(pstSessionInfo->szTargetPath)));
+    }
+
+    fSetTabPageText(hMainTab, pDebugInfo->stTabPageInfo.iTabIndex, pszTabText);
+
     // Create the init sync event, not signaled to start with
     LoadString(g_hMainInstance, IDS_GUIDBG_SYNC, szEventNameSync, _countof(szEventNameSync));
     hEventInitSync = CreateEvent(NULL, FALSE, FALSE, szEventNameSync);

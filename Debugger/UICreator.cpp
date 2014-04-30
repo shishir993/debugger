@@ -241,6 +241,7 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                                 NULL);
     ISNULL_GOTO(hTabBottom, error_return);
 
+    pstTabPageInfo->hMainTab = hTab;
     pstTabPageInfo->hEditDisass = hEditDisass;
     pstTabPageInfo->hListCallStack = hListCStack;
     pstTabPageInfo->hListRegisters = hListRegisters;
@@ -310,4 +311,18 @@ void vDeleteTabPage(HWND hTab, PTABPAGEINFO pstTabPageInfo)
 
     // Remove the tab item
     SendMessage(hTab, TCM_DELETEITEM, (int)pstTabPageInfo->iTabIndex, (LPARAM)NULL);
+}
+
+BOOL fSetTabPageText(HWND hTab, int iTabIndex, PWCHAR pszTabText)
+{
+    ASSERT(ISVALID_HANDLE(hTab));
+    ASSERT(iTabIndex >= 0);
+    ASSERT(pszTabText);
+
+    TCITEM stTcItem = {0};
+
+    stTcItem.mask = TCIF_TEXT;
+    stTcItem.pszText = pszTabText;
+
+    return SendMessage(hTab, TCM_SETITEM, iTabIndex, (LPARAM)&stTcItem);
 }
