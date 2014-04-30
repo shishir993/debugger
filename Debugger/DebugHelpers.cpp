@@ -259,7 +259,18 @@ BOOL fHandleExceptionBreakpoint(PTARGETINFO pstTargetInfo, __out PDWORD pdwConti
     // Found the breakpoint info
     if(stBpInfo.iBpType & BPTYPE_USERSINGLEHIT || stBpInfo.iBpType & BPTYPE_USERMULTIHIT)
     {
-        // Save this breakpoint information so that we resume target execution(by removing BP) later.
+        // Remove the breakpoint here so that we can show the disassembly with the correct opcode
+        if(!fBpRemove(pstTargetInfo->pListBreakpoint, &stBpInfo, pstTargetInfo))
+        {
+            logerror(pstLogger, L"%s(): fBpRemove() failed %u", __FUNCTIONW__, GetLastError());
+            return FALSE;
+        }
+
+        // Decrement instruction pointer for the same reason
+        fDecrementInstPointer(pstTargetInfo->phtThreads, pstTargetInfo->lpDebugEvent->dwThreadId);
+
+        // Save this breakpoint information so that we can re-insert breakpoint 
+        // if needed when continuing execution later on.
         pstTargetInfo->stPrevBpInfo.dwThreadId = pstTargetInfo->lpDebugEvent->dwThreadId;
         memcpy(&pstTargetInfo->stPrevBpInfo.stBpInfo, &stBpInfo, sizeof(BPINFO));
 
@@ -276,6 +287,22 @@ BOOL fHandleExceptionBreakpoint(PTARGETINFO pstTargetInfo, __out PDWORD pdwConti
     }
 
     *pdwContinueStatus = DBG_CONTINUE;
+
+    return TRUE;
+}
+
+BOOL fReInsertBPIf(PTARGETINFO pstTargetInfo, PREVBPINFO *pstBpInfo)
+{
+    ASSERT(pstTargetInfo);
+    ASSERT(pstBpInfo);
+
+    ASSERT(pstBpInfo->dwThreadId != 0);
+
+    if(pstBpInfo->stBpInfo.iBpType & BPTYPE_USERMULTIHIT || pstBpInfo->stBpInfo.iBpType & BPTYPE_DEBUGGERMULTIHIT)
+    {
+        logtrace(pstLogger, L"%s(): Reinserting multi-hit BP", __FUNCTIONW__);
+        return fBpRemove(pstTargetInfo->pListBreakpoint, &pstBpInfo->stBpInfo, pstTargetInfo);
+    }
 
     return TRUE;
 }

@@ -455,16 +455,13 @@ static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo)
 
             case GD_MENU_CONTINUE:
             {
-                // Remove breakpoint
-                if(!fBpRemove(pstTargetInfo->pListBreakpoint, &pstTargetInfo->stPrevBpInfo.stBpInfo, pstTargetInfo))
+                // Re-insert breakpoint if it is a multi-hit BP
+                if(!fReInsertBPIf(pstTargetInfo, &pstTargetInfo->stPrevBpInfo))
                 {
                     dbgwprintf(L"()%s: Failed to remove breakpoint", __FUNCTIONW__);
                     logerror(pstLogger, L"()%s: Failed to remove breakpoint", __FUNCTIONW__);
                     break;
                 }
-
-                // Set EIP to previous instruction
-                fDecrementInstPointer(pstTargetInfo->phtThreads, pstTargetInfo->stPrevBpInfo.dwThreadId);
 
                 // Change debugger state
                 pstTargetInfo->iPrevDebugState = pstTargetInfo->iDebugState;
@@ -476,6 +473,8 @@ static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo)
                     dbgwprintf(L"%s(): ContinueDebugEvent failed %u\n", __FUNCTIONW__, GetLastError());
                     logerror(pstLogger, L"%s(): ContinueDebugEvent failed %u\n", __FUNCTIONW__, GetLastError());
                 }
+
+                ZeroMemory(&pstTargetInfo->stPrevBpInfo, sizeof(pstTargetInfo->stPrevBpInfo));
 
                 break;
             }

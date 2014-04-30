@@ -20,6 +20,7 @@ BOOL fIsNtDllLoaded(CHL_HTABLE *phtDllTable, __out DWORD *pdwBaseAddress);
 // Breakpoint functions
 BOOL fBreakAtEntryPoint(PTARGETINFO pstTargetInfo);
 BOOL fHandleExceptionBreakpoint(PTARGETINFO pstTargetInfo, __out PDWORD pdwContinueStatus);
+BOOL fReInsertBPIf(PTARGETINFO pstTargetInfo, PREVBPINFO *pstBpInfo);
 BOOL fDecrementInstPointer(CHL_HTABLE *phtThreads, DWORD dwThreadId);
 
 void vSetContinueStatusFromUser(DWORD dwExceptionCode, DWORD dwExceptionAddress, BOOL fFirstChance, PDWORD pdwContinueStatus);
