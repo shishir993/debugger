@@ -109,7 +109,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                     DBG_SESSIONSTART stSessionInfo;
 
                     // Init struct
-                    stSessionInfo.szTargetPath[0] = 0;
+                    ZeroMemory(&stSessionInfo, sizeof(stSessionInfo));
 
                     DialogBoxParam(g_hMainInstance, MAKEINTRESOURCE(IDD_OPENPROGRAM), hWnd, fGetNewProgramDP, (LPARAM)&stSessionInfo);
                     if(stSessionInfo.szTargetPath[0] == 0)
@@ -128,7 +128,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                     DBG_SESSIONSTART stSessionInfo;
 
                     // Init struct
-                    stSessionInfo.dwTargetPID = 0;
+                    ZeroMemory(&stSessionInfo, sizeof(stSessionInfo));
 
                     DialogBoxParam(g_hMainInstance, MAKEINTRESOURCE(IDD_GETPROCID), hWnd, fGetProcIdDP, (LPARAM)&stSessionInfo);
                     if(stSessionInfo.dwTargetPID == 0)
