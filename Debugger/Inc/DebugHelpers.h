@@ -32,5 +32,6 @@ void vDebuggerStateChange(PTARGETINFO pstTargetInfo, int iNewState);
 // Gui management
 BOOL fUpdateThreadsListView(HWND hList, CHL_HTABLE *phtThreads, HANDLE hMainThread);
 BOOL fUpdateRegistersListView(HWND hList, DWORD dwThreadId);
+BOOL fShowDisassembly(PTARGETINFO pstTargetInfo, DWORD dwStartFromTargetAddress);
 
 #endif // _DEBUGTHREADHELPERS_H

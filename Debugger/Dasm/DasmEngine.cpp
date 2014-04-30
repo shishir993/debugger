@@ -785,7 +785,6 @@ BOOL fDasmDisassembleOne(
     __inout PDASMSTATE pstDasmState,
     __in PBYTE pbCodeBegin, 
     DWORD dwSizeOfCodeSection,
-    INT nInstToDisassemble, 
     BOOL fStopAtFunctionEnd,
     DWORD dwTargetAddressBegin,
     __out PINT piReturnStatus)
@@ -793,8 +792,10 @@ BOOL fDasmDisassembleOne(
     ASSERT(pbCodeBegin);
     ASSERT(pstDasmState);
 
-	PBYTE pbEndOfCode = NULL;
     BOOL fRetVal = TRUE;
+
+    DBG_UNREFERENCED_PARAMETER(piReturnStatus);
+    DBG_UNREFERENCED_PARAMETER(fStopAtFunctionEnd);
 
     if(pstDasmState->structInitialized != MAGIC_DASMSTATE_STRUCT)
     {
@@ -802,15 +803,16 @@ BOOL fDasmDisassembleOne(
         ZeroMemory(pstDasmState, sizeof(DASMSTATE));
         pstDasmState->structInitialized = MAGIC_DASMSTATE_STRUCT;
 
+        pstDasmState->pbCurrentCodePtr = pbCodeBegin;
+        pstDasmState->pbEndOfCode = pbCodeBegin + dwSizeOfCodeSection;
+
+        pstDasmState->lDelta = (long)dwTargetAddressBegin - (long)pbCodeBegin;
+
         ASSERT(pbCodeBegin < (pbCodeBegin + dwSizeOfCodeSection));
     }
 
     pstDasmState->fRunning = TRUE;
     pstDasmState->dsNextState = DASM_STATE_RESET;
-
-    pstDasmState->pbCurrentCodePtr = pbCodeBegin;
-    pbEndOfCode = pstDasmState->pbCurrentCodePtr + dwSizeOfCodeSection;
-    pstDasmState->lDelta = (long)dwTargetAddressBegin - (long)pbCodeBegin;
 
 	// State machine is running until we have disassembled one instruction
     while(1)
@@ -825,8 +827,14 @@ BOOL fDasmDisassembleOne(
 
 				// Check if we have reached the end of code section
 				// before beginning decoding of the next byte
-				if(pstDasmState->pbCurrentCodePtr >= pbEndOfCode)
+				if(pstDasmState->pbCurrentCodePtr >= pstDasmState->pbEndOfCode)
+                {
+                    // This is an error because we do not expect to hit end of code
+                    // when disassembling one instruction at a time.
+                    // TODO: Send back the return status saying we need more code bytes
+                    fRetVal = FALSE;
 					goto AFT_WHILE;
+                }
 				else
 					pstDasmState->dsNextState = DASM_STATE_PREFIX;
 				break;
@@ -926,7 +934,7 @@ BOOL fDasmDisassembleOne(
 
 AFT_WHILE:
     
-    return TRUE;
+    return fRetVal;
 }
 
 /* fStateReset()
@@ -3875,7 +3883,7 @@ BOOL fStateDump_ToString(PDASMSTATE pstState)
 	//}// if fDataOffset
 
 	// 7: Go to next line
-	nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"\n");
+	nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"\r\n");
 
 	// 8: Check if there are more bytes of the current instruction
 	// to print.
@@ -3897,7 +3905,7 @@ BOOL fStateDump_ToString(PDASMSTATE pstState)
 		{
 			nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"%02X ", *pBytes);
 		}
-		nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"\n");
+		nTotalCharsWritten += swprintf_s(pszStrStart + nTotalCharsWritten, nTotalCharsCapacity - nTotalCharsWritten, L"\r\n");
 	}
 
 	pstState->dsNextState = DASM_STATE_RESET;

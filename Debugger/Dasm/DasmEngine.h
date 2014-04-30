@@ -11,7 +11,7 @@
 
 #define MAX_OPCODE_NAME_LEN		16		// prefetchnta made me increase this from 10 to 16!
 #define MAX_INSRUCTION_LEN		15		// 15 bytes is the max len of one instruction as of now
-#define MAX_INS_STRLEN			64
+#define MAX_INS_STRLEN			128
 #define MAX_INS_OP_STR_LEN		32		// string length of the mnemonic for operands
 #define MAX_PREFIX_STR_LEN		16
 #define NUM_CHARS_MNEMONIC		12
@@ -480,6 +480,7 @@ typedef struct _DasmState {
     }insCurIns;
 
     PBYTE pbCurrentCodePtr;
+    PBYTE pbEndOfCode;
 
     // No. of bytes in the current instruction; used to dump
     // hex bytes by subtracting this from pbCurrentCodePtr
@@ -518,6 +519,7 @@ typedef struct _InsSplit INS_SPLIT;
 BOOL fDisassembler(NCODE_LOCS *pCodeLocs, DWORD dwVirtCodeBase);
 BOOL fDoDisassembly(DWORD *pdwCodeSection, DWORD dwSizeOfCodeSection,
 					DWORD dwVirtCodeBase);
+
 BOOL fDasmDisassemble(
     PBYTE pbCodeBegin, 
     DWORD dwSizeOfCodeSection,
@@ -525,6 +527,14 @@ BOOL fDasmDisassemble(
     BOOL fStopAtFunctionEnd,
     DWORD dwTargetAddressBegin,
     PINT piReturnStatus);
+
+BOOL fDasmDisassembleOne(
+    __inout PDASMSTATE pstDasmState,
+    __in PBYTE pbCodeBegin, 
+    DWORD dwSizeOfCodeSection,
+    BOOL fStopAtFunctionEnd,
+    DWORD dwTargetAddressBegin,
+    __out PINT piReturnStatus);
 
 /* Disasm states */
 BOOL fStateReset(PDASMSTATE pstState);

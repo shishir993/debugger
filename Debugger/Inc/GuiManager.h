@@ -9,6 +9,8 @@
 #include "CHelpLibDll.h"
 #include "GuiDebugCommon.h"
 
+#define CLEAR_EDITCONTROL(hEditControl)     SendMessage(hEditControl, EM_SETSEL, 0, -1); SendMessage(hEditControl, EM_REPLACESEL, FALSE, (LPARAM)L"")
+
 BOOL fGuiInitialize(__out DWORD *pdwErrCode);
 void vGuiExit();
 BOOL fGuiAddTab(int tabIndex, DWORD threadId, __out DWORD *pdwErrCode);

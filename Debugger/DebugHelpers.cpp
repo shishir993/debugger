@@ -3,6 +3,7 @@
 #include "Inc\MenuItems.h"
 #include "Inc\Breakpoint.h"
 #include "Inc\GuiManager.h"
+#include "Dasm\DasmEngine.h"
 
 extern PLOGGER pstLogger;
 
@@ -603,6 +604,9 @@ void vDebuggerStateChange(PTARGETINFO pstTargetInfo, int iNewState)
                 pstTargetInfo->pstDebugInfoFromGui->stTabPageInfo.hListRegisters,
                 pstTargetInfo->stPrevBpInfo.dwThreadId);
 
+            // 3. Show disassembly
+            fShowDisassembly(pstTargetInfo, pstTargetInfo->stPrevBpInfo.stBpInfo.dwTargetAddr);
+
             break;
         }
     }
@@ -649,4 +653,46 @@ void vSetMenuItemsState(PTARGETINFO pstTargetInfo)
             break;
         }
     }
+}
+
+BOOL fShowDisassembly(PTARGETINFO pstTargetInfo, DWORD dwStartFromTargetAddress)
+{
+    ASSERT(pstTargetInfo);
+    ASSERT(dwStartFromTargetAddress > 0);
+
+    BYTE abTargetCode[60];
+    SIZE_T ulBytesRead = 0;
+
+    DASMSTATE stDasmState;
+    HWND hEditControl;
+
+    // Read 'x' bytes from process memory
+
+    // Prototyping this for now
+
+    // We want to display 10 instructions; assuming each average length of each 
+    // instruction is 6 bytes (just a guess), read 60 bytes from target memory
+    if(!ReadProcessMemory(pstTargetInfo->stProcessInfo.hProcess, (LPCVOID)dwStartFromTargetAddress, abTargetCode, sizeof(abTargetCode), &ulBytesRead))
+    {
+        return FALSE;
+    }
+
+    ZeroMemory(&stDasmState, sizeof(stDasmState));
+
+    hEditControl = pstTargetInfo->pstDebugInfoFromGui->stTabPageInfo.hEditDisass;
+    CLEAR_EDITCONTROL(hEditControl);
+
+    for(int numInst = 0; numInst < 10; ++numInst)
+    {
+        if(!fDasmDisassembleOne(&stDasmState, abTargetCode, ulBytesRead, FALSE, dwStartFromTargetAddress, NULL))
+        {
+            dbgwprintf(L"fDasmDisassembleOne FAILED\n");
+            break;
+        }
+
+        // Add to edit control
+        SendMessage(hEditControl, EM_REPLACESEL, FALSE, (LPARAM)stDasmState.szDisassembledInst);
+    }
+
+    return FALSE;
 }
