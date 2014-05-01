@@ -18,6 +18,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR szCmdLine,
     MSG MainWndMsg;
 	WNDCLASS MainWndClass;
 
+    HACCEL hAccel;
+
 	WCHAR szAppName[SLEN_COMMON64];
 
     int iScreenX, iScreenY, iWndX, iWndY, iWidth, iHeight;
@@ -80,6 +82,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR szCmdLine,
 		return CE_WMAIN_ERROR;
 	}
 
+    // Init accelerators
+    hAccel = LoadAccelerators(g_hMainInstance, MAKEINTRESOURCE(IDR_ACCELERATOR1));
+    if(!hAccel)
+    {
+        MessageBox(g_hMainWnd, L"Initialization failed. See log file.", L"Error", MB_OK | MB_ICONSTOP);
+        logerror(pstLogger, L"LoadAccelerators() failed %u", GetLastError());
+        return CE_WMAIN_ERROR;
+    }
+
 	// centre the main window in the screen
 
 	// get the screen co-ordinates
@@ -102,8 +113,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR szCmdLine,
 
 	while( GetMessage(&MainWndMsg, NULL, 0, 0) )
 	{
-		TranslateMessage(&MainWndMsg);
-		DispatchMessage(&MainWndMsg);
+        if(!TranslateAccelerator(g_hMainWnd, hAccel, &MainWndMsg))
+        {
+		    TranslateMessage(&MainWndMsg);
+		    DispatchMessage(&MainWndMsg);
+        }
 	}
 	
 	return MainWndMsg.wParam;

@@ -100,6 +100,30 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             break;
         }
 
+        case WM_KEYDOWN:
+        {
+            // Handling  Ctrl+Alt+O. I don't know why accelerator does not work
+            // for this key combination
+            if((WORD)wParam == 'O')
+            {
+                // Handle this key combination only if the menu item is enabled
+                int iMenuState = GetMenuState(hMainMenu, IDM_DEBUGPROCESS, MF_BYCOMMAND);
+
+                if(iMenuState != -1 && !(iMenuState & (MF_DISABLED|MF_GRAYED)))
+                {
+                    int ic = GetKeyState(VK_CONTROL);
+                    int ia = GetKeyState(VK_MENU);
+
+                    if(ic < 0 && ia < 0)
+                    {
+                        SendMessage(hWnd, WM_COMMAND, IDM_DEBUGPROCESS, NULL);
+                    }
+                }
+            }
+
+            break;
+        }
+
         case WM_COMMAND:
 		{
 			switch(LOWORD(wParam))
@@ -179,6 +203,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 case IDM_CONTINUE:
                 {
                     fSendMessageDebugThread(iCurTabIndex, GD_MENU_CONTINUE,  NULL);
+                    return 0;
+                }
+
+                case IDM_BREAKINTOTARGET:
+                {
                     return 0;
                 }
 
