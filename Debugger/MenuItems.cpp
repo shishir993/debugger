@@ -46,7 +46,7 @@ void vMiDebuggerRunning(HMENU hMenu)
     EnableMenuItem(hMenu, IDM_DETACHFROMTARGET, MF_ENABLED);
     EnableMenuItem(hMenu, IDM_DUMPANDTERMINATETARGET, MF_ENABLED);
 
-    EnableMenuItem(hMenu, IDM_BREAKINTOTARGET, MF_GRAYED);
+    EnableMenuItem(hMenu, IDM_BREAKINTOTARGET, MF_ENABLED);
 
     EnableMenuItem(hMenu, IDM_SUSPENDALLTHREADS, MF_ENABLED);
     EnableMenuItem(hMenu, IDM_RESUMEALLTHREADS, MF_ENABLED);

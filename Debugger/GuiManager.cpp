@@ -629,6 +629,9 @@ BOOL fGuiUpdateThreadsList(HWND hThreadListView, PLV_THREADINFO pstLvThreadInfo,
     ppszStrings[3] = szType;
     ppszStrings[4] = szPriority;
 
+    // TODO: log failure as error
+    ListView_DeleteAllItems(hThreadListView);
+
     for(index = 0; index < nItems; ++index)
     {
         // Construct the strings
@@ -654,9 +657,9 @@ BOOL fGuiUpdateThreadsList(HWND hThreadListView, PLV_THREADINFO pstLvThreadInfo,
     return TRUE;
 }
 
-BOOL fGuiUpdateRegistersList(HWND hThreadListView, WCHAR *apszNames[], DWORD *padwValues, int nItems)
+BOOL fGuiUpdateRegistersList(HWND hRegsListView, WCHAR *apszNames[], DWORD *padwValues, int nItems)
 {
-    ASSERT(ISVALID_HANDLE(hThreadListView));
+    ASSERT(ISVALID_HANDLE(hRegsListView));
     ASSERT(apszNames);
     ASSERT(padwValues);
     ASSERT(nItems > 0);
@@ -678,13 +681,16 @@ BOOL fGuiUpdateRegistersList(HWND hThreadListView, WCHAR *apszNames[], DWORD *pa
     ppszStrings[0] = szName;
     ppszStrings[1] = szValue;
 
+    // TODO: log failure as error
+    ListView_DeleteAllItems(hRegsListView);
+
     for(index = 0; index < nItems; ++index)
     {
         swprintf_s(szName, _countof(szName), L"%s", apszNames[index]);
         swprintf_s(szValue, _countof(szValue), L"0x%08x", padwValues[index]);
 
         // Insert into list view
-        if(!fChlGuiAddListViewRow(hThreadListView, ppszStrings, LV_REGS_NUMCOLUMNS))
+        if(!fChlGuiAddListViewRow(hRegsListView, ppszStrings, LV_REGS_NUMCOLUMNS))
         {
             logerror(pstLogger, L"%s(): fChlGuiAddListViewRow failed %u", __FUNCTIONW__, GetLastError());
             return FALSE;

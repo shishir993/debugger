@@ -456,30 +456,92 @@ static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo)
             case GD_MENU_CONTINUE:
             {
                 // Re-insert breakpoint if it is a multi-hit BP
-                if(!fReInsertBPIf(pstTargetInfo, &pstTargetInfo->stPrevBpInfo))
+                if(pstTargetInfo->iDebugState == DSTATE_BREAKPOINTWAIT)
                 {
-                    dbgwprintf(L"()%s: Failed to remove breakpoint", __FUNCTIONW__);
-                    logerror(pstLogger, L"()%s: Failed to remove breakpoint", __FUNCTIONW__);
-                    break;
+                    if(!fReInsertBPIf(pstTargetInfo, &pstTargetInfo->stPrevBpInfo))
+                    {
+                        dbgwprintf(L"()%s: Failed to remove breakpoint", __FUNCTIONW__);
+                        logerror(pstLogger, L"()%s: Failed to remove breakpoint", __FUNCTIONW__);
+                        break;
+                    }
+
+                    // Continue debug event
+                    if(!ContinueDebugEvent(pstTargetInfo->dwPID, pstTargetInfo->stPrevBpInfo.dwThreadId, DBG_CONTINUE))
+                    {
+                        dbgwprintf(L"%s(): ContinueDebugEvent failed %u\n", __FUNCTIONW__, GetLastError());
+                        logerror(pstLogger, L"%s(): ContinueDebugEvent failed %u\n", __FUNCTIONW__, GetLastError());
+                    }
+
+                    ZeroMemory(&pstTargetInfo->stPrevBpInfo, sizeof(pstTargetInfo->stPrevBpInfo));
+                }
+                else if(pstTargetInfo->iDebugState == DSTATE_SINGLESTEP_BEFORE)
+                {
+                    // Clear TF so that we continue executing target
+                    if(!fClearTrapFlag(pstTargetInfo->phtThreads, pstTargetInfo->dwSSThreadId))
+                    {
+                        logerror(pstLogger, L"%s(): Unable to clear TF in thread ID %u", __FUNCTIONW__, pstTargetInfo->dwSSThreadId);
+                        // TODO: messagebox
+                        break;
+                    }
+
+                    // Continue debug event
+                    if(!ContinueDebugEvent(pstTargetInfo->dwPID, pstTargetInfo->dwSSThreadId, DBG_CONTINUE))
+                    {
+                        dbgwprintf(L"%s(): ContinueDebugEvent failed after SS %u\n", __FUNCTIONW__, GetLastError());
+                        logerror(pstLogger, L"%s(): ContinueDebugEvent failed after SS %u\n", __FUNCTIONW__, GetLastError());
+                    }
+
+                    pstTargetInfo->dwSSTargetAddr = pstTargetInfo->dwSSThreadId = 0;
                 }
 
                 // Change debugger state
                 vDebuggerStateChange(pstTargetInfo, DSTATE_RUNNING);
-
-                // Continue debug event
-                if(!ContinueDebugEvent(pstTargetInfo->dwPID, pstTargetInfo->stPrevBpInfo.dwThreadId, DBG_CONTINUE))
-                {
-                    dbgwprintf(L"%s(): ContinueDebugEvent failed %u\n", __FUNCTIONW__, GetLastError());
-                    logerror(pstLogger, L"%s(): ContinueDebugEvent failed %u\n", __FUNCTIONW__, GetLastError());
-                }
-
-                ZeroMemory(&pstTargetInfo->stPrevBpInfo, sizeof(pstTargetInfo->stPrevBpInfo));
 
                 break;
             }
 
             case GD_MENU_STEPINTO:
             {
+                if(pstTargetInfo->iDebugState == DSTATE_BREAKPOINTWAIT)
+                {
+                    if(!fSetTrapFlag(pstTargetInfo->phtThreads, pstTargetInfo->stPrevBpInfo.dwThreadId))
+                    {
+                        logerror(pstLogger, L"%s(): Unable to set TF in thread ID %u", __FUNCTIONW__, pstTargetInfo->stPrevBpInfo.dwThreadId);
+                        // TODO: messagebox
+                        break;
+                    }
+
+                    if(!ContinueDebugEvent(pstTargetInfo->dwPID, pstTargetInfo->stPrevBpInfo.dwThreadId, DBG_CONTINUE))
+                    {
+                        dbgwprintf(L"%s(): ContinueDebugEvent failed %u\n", __FUNCTIONW__, GetLastError());
+                        logerror(pstLogger, L"%s(): ContinueDebugEvent failed %u\n", __FUNCTIONW__, GetLastError());
+                        break;
+                    }
+                }
+                else if(pstTargetInfo->iDebugState == DSTATE_SINGLESTEP_BEFORE)
+                {
+                    if(!fSetTrapFlag(pstTargetInfo->phtThreads, pstTargetInfo->dwSSThreadId))
+                    {
+                        logerror(pstLogger, L"%s(): Unable to set TF in thread ID %u", __FUNCTIONW__, pstTargetInfo->stPrevBpInfo.dwThreadId);
+                        // TODO: messagebox
+                        break;
+                    }
+
+                    if(!ContinueDebugEvent(pstTargetInfo->dwPID, pstTargetInfo->dwSSThreadId, DBG_CONTINUE))
+                    {
+                        dbgwprintf(L"%s(): ContinueDebugEvent failed %u\n", __FUNCTIONW__, GetLastError());
+                        logerror(pstLogger, L"%s(): ContinueDebugEvent failed %u\n", __FUNCTIONW__, GetLastError());
+                        break;
+                    }
+                }
+                else
+                {
+                    ASSERT(FALSE);
+                    break;
+                }
+
+                vDebuggerStateChange(pstTargetInfo, DSTATE_SINGLESTEP_AFTER);
+
                 break;
             }
 
@@ -604,10 +666,6 @@ static BOOL fProcessDebugEventLoop(PTARGETINFO pstTargetInfo)
 
                     fOnException(pstTargetInfo, &dwContinueStatus);
 
-                    ASSERT(dwContinueStatus == DBG_CONTINUE || dwContinueStatus == DBG_CONTCUSTOM_ABORT ||
-                        dwContinueStatus == DBG_CONTCUSTOM_BREAK || dwContinueStatus == DBG_EXCEPTION_NOT_HANDLED ||
-                        dwContinueStatus == DBG_EXCEPTION_HANDLED);
-
                     // TODO: Handle different values of dwContinueStatus
 
                     if(dwContinueStatus == DBG_CONTCUSTOM_ABORT)
@@ -637,6 +695,8 @@ static BOOL fProcessDebugEventLoop(PTARGETINFO pstTargetInfo)
                         // Check the iDebugState
                         if(pstTargetInfo->iDebugState != DSTATE_BREAKPOINTWAIT && pstTargetInfo->iDebugState != DSTATE_SINGLESTEP_BEFORE)
                         {
+                            ASSERT(dwContinueStatus == DBG_CONTINUE || dwContinueStatus == DBG_EXCEPTION_NOT_HANDLED);
+
                             ContinueDebugEvent(de.dwProcessId, de.dwThreadId, dwContinueStatus);
                         }
                         else
@@ -770,12 +830,41 @@ BOOL fOnException(PTARGETINFO pstTargetInfo, __out DWORD *pdwContinueStatus)
     {
         case EXCEPTION_BREAKPOINT:
         {
+            logtrace(pstLogger, L"EXCEPTION_BREAKPOINT in %u at %p", lpDebugEvent->dwThreadId, lpDebugEvent->u.Exception.ExceptionRecord.ExceptionAddress);
+
+            dbgwprintf(L"EXCEPTION_BREAKPOINT in %u at %p\n", lpDebugEvent->dwThreadId, lpDebugEvent->u.Exception.ExceptionRecord.ExceptionAddress);
+
             fHandleExceptionBreakpoint(pstTargetInfo, pdwContinueStatus);
             break;
         }
 
         case EXCEPTION_SINGLE_STEP:
         {
+            logtrace(pstLogger, L"EXCEPTION_SINGLE_STEP in %u at %p", lpDebugEvent->dwThreadId, lpDebugEvent->u.Exception.ExceptionRecord.ExceptionAddress);
+
+            dbgwprintf(L"EXCEPTION_SINGLE_STEP in %u at %p\n", lpDebugEvent->dwThreadId, lpDebugEvent->u.Exception.ExceptionRecord.ExceptionAddress);
+
+            if(pstTargetInfo->iDebugState != DSTATE_SINGLESTEP_AFTER)
+            {
+                // Should never happen (?)
+                break;
+            }
+
+            pstTargetInfo->dwSSThreadId = lpDebugEvent->dwThreadId;
+            pstTargetInfo->dwSSTargetAddr = (DWORD)lpDebugEvent->u.Exception.ExceptionRecord.ExceptionAddress;
+
+            if(!fSetTrapFlag(pstTargetInfo->phtThreads, pstTargetInfo->stPrevBpInfo.dwThreadId))
+            {
+                logerror(pstLogger, L"%s(): Unable to set TF in thread ID %u", __FUNCTIONW__, pstTargetInfo->stPrevBpInfo.dwThreadId);
+                // TODO: messagebox
+            }
+            else
+            {
+                vDebuggerStateChange(pstTargetInfo, DSTATE_SINGLESTEP_BEFORE);
+            }
+
+            *pdwContinueStatus = DBG_CONTINUE;
+
             break;
         }
 

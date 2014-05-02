@@ -7,6 +7,18 @@
 
 extern PLOGGER pstLogger;
 
+void vPrintBits(DWORD dwNumber)
+{
+    for(int index = sizeof(dwNumber) * 8; index > 0; --index)
+    {
+        if(index % 4 == 0)
+        {
+            wprintf(L" ");
+        }
+        wprintf(L"%d", dwNumber & (1 << (index - 1)) ? 1 : 0);
+    }
+}
+
 BOOL fGetExceptionName(DWORD excode, __out WCHAR *pwsBuffer, int bufSize)
 {
     int iStringID = 0;
@@ -428,6 +440,98 @@ error_return:
     return FALSE;
 }
 
+BOOL fSetTrapFlag(CHL_HTABLE *phtThreads, DWORD dwThreadId)
+{
+    ASSERT(phtThreads);
+    ASSERT(dwThreadId > 0);
+
+    HANDLE hThread;
+    CONTEXT stThreadContext;
+
+    if(!fGetThreadHandle(phtThreads, dwThreadId, &hThread))
+    {
+        logerror(pstLogger, L"%s(): Cannot get thread handle for thread %u", __FUNCTIONW__, dwThreadId);
+        goto error_return;
+    }
+
+    ZeroMemory(&stThreadContext, sizeof(CONTEXT));
+
+    stThreadContext.ContextFlags = CONTEXT_CONTROL;
+    if(!GetThreadContext(hThread, &stThreadContext))
+    {
+        logerror(pstLogger, L"%s(): GetThreadContext failed %u", __FUNCTIONW__, GetLastError());
+        goto error_return;
+    }
+
+    dbgwprintf(L"Setting TF...\n");
+
+    vPrintBits(stThreadContext.EFlags);
+    dbgwprintf(L" : EFLAGS before\n");
+
+    stThreadContext.EFlags |= (1 << BITPOS_EFLAGS_TF);
+
+    vPrintBits(stThreadContext.EFlags);
+    dbgwprintf(L" : EFLAGS after\n");
+
+    stThreadContext.ContextFlags = CONTEXT_CONTROL;
+    if(!SetThreadContext(hThread, &stThreadContext))
+    {
+        logerror(pstLogger, L"%s(): SetThreadContext failed %u", __FUNCTIONW__, GetLastError());
+        goto error_return;
+    }
+
+    return TRUE;
+
+error_return:
+    return FALSE;
+}
+
+BOOL fClearTrapFlag(CHL_HTABLE *phtThreads, DWORD dwThreadId)
+{
+    ASSERT(phtThreads);
+    ASSERT(dwThreadId > 0);
+
+    HANDLE hThread;
+    CONTEXT stThreadContext;
+
+    if(!fGetThreadHandle(phtThreads, dwThreadId, &hThread))
+    {
+        logerror(pstLogger, L"%s(): Cannot get thread handle for thread %u", __FUNCTIONW__, dwThreadId);
+        goto error_return;
+    }
+
+    ZeroMemory(&stThreadContext, sizeof(CONTEXT));
+
+    stThreadContext.ContextFlags = CONTEXT_CONTROL;
+    if(!GetThreadContext(hThread, &stThreadContext))
+    {
+        logerror(pstLogger, L"%s(): GetThreadContext failed %u", __FUNCTIONW__, GetLastError());
+        goto error_return;
+    }
+
+    dbgwprintf(L"Clearing TF...\n");
+
+    vPrintBits(stThreadContext.EFlags);
+    dbgwprintf(L" : EFLAGS before\n");
+
+    stThreadContext.EFlags &= ~(1 << BITPOS_EFLAGS_TF);
+
+    vPrintBits(stThreadContext.EFlags);
+    dbgwprintf(L" : EFLAGS after\n");
+
+    stThreadContext.ContextFlags = CONTEXT_CONTROL;
+    if(!SetThreadContext(hThread, &stThreadContext))
+    {
+        logerror(pstLogger, L"%s(): SetThreadContext failed %u", __FUNCTIONW__, GetLastError());
+        goto error_return;
+    }
+
+    return TRUE;
+
+error_return:
+    return FALSE;
+}
+
 BOOL fUpdateThreadsListView(HWND hList, CHL_HTABLE *phtThreads, HANDLE hMainThread)
 {
     ASSERT(ISVALID_HANDLE(hList));
@@ -574,6 +678,7 @@ void vDebuggerStateChange(PTARGETINFO pstTargetInfo, int iNewState)
     switch(iNewState)
     {
         case DSTATE_RUNNING:
+        case DSTATE_SINGLESTEP_AFTER:
         {
             // Clear/Gray-out all child controls in the tab page
             // because that information is not valid when target is running
@@ -583,8 +688,10 @@ void vDebuggerStateChange(PTARGETINFO pstTargetInfo, int iNewState)
         
         case DSTATE_DEBUGGING:
         //case DSTATE_BREAKPOINTWAIT:   // same as DSTATE_DEBUGGING
-        //case DSTATE_SINGLESTEP_BEFORE:
         {
+            DWORD dwThreadIdToUse;
+            DWORD dwTargetAddrToUse;
+
             // Update UI to have updated target information displayed
             
             // 1. Update threads information
@@ -606,6 +713,33 @@ void vDebuggerStateChange(PTARGETINFO pstTargetInfo, int iNewState)
 
             // 3. Show disassembly
             fShowDisassembly(pstTargetInfo, pstTargetInfo->stPrevBpInfo.stBpInfo.dwTargetAddr);
+
+            break;
+        }
+
+        case DSTATE_SINGLESTEP_BEFORE:
+        {
+            // Update UI to have updated target information displayed
+            
+            // 1. Update threads information
+            if(!fUpdateThreadsListView(
+                    pstTargetInfo->pstDebugInfoFromGui->stTabPageInfo.hListThreads, 
+                    pstTargetInfo->phtThreads,
+                    pstTargetInfo->stProcessInfo.hThread))
+            {
+                logerror(pstLogger, L"%s(): fUpdateThreadsListView failed %u", __FUNCTIONW__, GetLastError());
+
+                // TODO: bubble up the error or show MessageBox?
+            }
+
+            // 2. Update CPU register values
+            // TODO: handle error
+            fUpdateRegistersListView(
+                pstTargetInfo->pstDebugInfoFromGui->stTabPageInfo.hListRegisters,
+                pstTargetInfo->dwSSThreadId);
+
+            // 3. Show disassembly
+            fShowDisassembly(pstTargetInfo, pstTargetInfo->dwSSTargetAddr);
 
             break;
         }
@@ -634,14 +768,15 @@ void vSetMenuItemsState(PTARGETINFO pstTargetInfo)
         }
 
         case DSTATE_RUNNING:
+        case DSTATE_SINGLESTEP_AFTER:
         {
             vMiDebuggerRunning(pstTargetInfo->pstDebugInfoFromGui->hMainMenu);
             break;
         }
 
         case DSTATE_DEBUGGING:
-        //case DSTATE_SINGLESTEP_BEFORE:    // same as DSTATE_DEBUGGING
-        //case DSTATE_BREAKPOINTWAIT:
+        //case DSTATE_BREAKPOINTWAIT:   // same as DSTATE_DEBUGGING
+        case DSTATE_SINGLESTEP_BEFORE:
         {
             vMiDebuggerDebugging(pstTargetInfo->pstDebugInfoFromGui->hMainMenu);
             break;

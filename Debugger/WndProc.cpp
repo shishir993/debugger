@@ -121,6 +121,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 }
             }
 
+            // TODO: Ctrl+Alt+Pause is also not working. Keyboard issue?
+
             break;
         }
 
@@ -206,8 +208,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                     return 0;
                 }
 
+                case IDM_STEPINTO:
+                {
+                    fSendMessageDebugThread(iCurTabIndex, GD_MENU_STEPINTO,  NULL);
+                    return 0;
+                }
+
                 case IDM_BREAKINTOTARGET:
                 {
+                    logtrace(pstLogger, L"IDM_BREAKINTOTARGET");
                     return 0;
                 }
 

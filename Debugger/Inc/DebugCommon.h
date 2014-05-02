@@ -18,17 +18,17 @@
 // User is single stepping(step into)
 // Before: we are waiting for user input, DO NOT process debug event loop
 // After: user has pressed step into, process debug event loop(expect a SS exception)
-#define DSTATE_SINGLESTEP_BEFORE        DSTATE_DEBUGGING
-#define DSTATE_SINGLESTEP_AFTER         3      
+#define DSTATE_SINGLESTEP_BEFORE        3
+#define DSTATE_SINGLESTEP_AFTER         4      
 
 // Debugger is using single step for its own purpose
-#define DSTATE_SINGLESTEP_DBG           4
+#define DSTATE_SINGLESTEP_DBG           5
 
 // Set by the Gui message loop handler or the debug event loop handler
 // indicating that the debug thread must exit now. This will be used 
 // when the target process exits(either by itself or we killed it) or
 // we detach from it.
-#define DSTATE_EXIT                     5
+#define DSTATE_EXIT                     6
 
 // State after breakpoint hit. We must wait for user input and DO NOT
 // let target process continue execution when in this state
@@ -104,6 +104,10 @@ typedef struct _TargetInfo {
     CHL_HTABLE *phtThreads;
     PBPLIST pListBreakpoint;
     PREVBPINFO stPrevBpInfo;
+
+    // To store info during single stepping (using TF)
+    DWORD dwSSThreadId;
+    DWORD dwSSTargetAddr;
     
     int nCurThreads;
     int nTotalProcesses;
