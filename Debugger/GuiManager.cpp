@@ -403,7 +403,7 @@ static BOOL fDisplayActiveProcesses(HWND hProcIDList, DWORD **paProcIDs, DWORD *
         return FALSE;
     }
 
-    logerror(pstLogger, L"Enumerated %d processes", dwBytesReturned/sizeof(DWORD));
+    logtrace(pstLogger, L"Enumerated %d processes", dwBytesReturned/sizeof(DWORD));
 
     *pnProcIDs = dwBytesReturned/sizeof(DWORD);
     for(DWORD index = 0; index < dwBytesReturned/sizeof(DWORD); ++index)
@@ -416,7 +416,7 @@ static BOOL fDisplayActiveProcesses(HWND hProcIDList, DWORD **paProcIDs, DWORD *
         }
         else
         {
-            logerror(pstLogger, L"%5d %s", (*paProcIDs)[index], wsProcName);
+            logtrace(pstLogger, L"%5d %s", (*paProcIDs)[index], wsProcName);
         }
 
         // insert into the list

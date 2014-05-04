@@ -130,7 +130,7 @@ void vWriteLogType(int iLogLevel, PLOGGER pLogger, const WCHAR *pszMessageFmt, .
         return;
     }
 
-    vWriteLogInternal(LOGTYPE_TRACE, pLogger, szLogMessage, wcslen(szLogMessage));
+    vWriteLogInternal(iLogLevel, pLogger, szLogMessage, wcslen(szLogMessage));
 }
 
 // Internal function that actually does the writing to log file part
