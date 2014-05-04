@@ -217,6 +217,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 case IDM_BREAKINTOTARGET:
                 {
                     logtrace(pstLogger, L"IDM_BREAKINTOTARGET");
+                    fSendMessageDebugThread(iCurTabIndex, GD_MENU_BREAKALL,  NULL);
                     return 0;
                 }
 

@@ -24,11 +24,13 @@
 // Debugger is using single step for its own purpose
 #define DSTATE_SINGLESTEP_DBG           5
 
+#define DSTATE_WAITFOR_DBGBREAK         6
+
 // Set by the Gui message loop handler or the debug event loop handler
 // indicating that the debug thread must exit now. This will be used 
 // when the target process exits(either by itself or we killed it) or
 // we detach from it.
-#define DSTATE_EXIT                     6
+#define DSTATE_EXIT                     7
 
 // State after breakpoint hit. We must wait for user input and DO NOT
 // let target process continue execution when in this state

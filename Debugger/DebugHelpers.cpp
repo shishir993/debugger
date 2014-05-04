@@ -259,6 +259,21 @@ BOOL fHandleExceptionBreakpoint(PTARGETINFO pstTargetInfo, __out PDWORD pdwConti
     {
         logwarn(pstLogger, L"%s(): fBpFind() failed %u", __FUNCTIONW__, GetLastError());
         
+        if(pstTargetInfo->iDebugState == DSTATE_WAITFOR_DBGBREAK)
+        {
+            // We have received the breakpoint exception after calling DebugBreakProcess
+
+            // Save the thread id and target address so that we can show disassembly
+            pstTargetInfo->stPrevBpInfo.dwThreadId = pstTargetInfo->lpDebugEvent->dwThreadId;
+            pstTargetInfo->stPrevBpInfo.stBpInfo.dwTargetAddr = (DWORD)pstTargetInfo->lpDebugEvent->u.Exception.ExceptionRecord.ExceptionAddress;
+
+            // Debugger state change is handled in Debug.cpp:fOnException()
+
+            *pdwContinueStatus = DBG_CONTCUSTOM_BREAK;
+
+            return TRUE;
+        }
+
         // Ask user what to do and get the pdwContinueStatus parameter set
         vSetContinueStatusFromUser(
             pstTargetInfo->lpDebugEvent->u.Exception.ExceptionRecord.ExceptionCode,
@@ -310,6 +325,12 @@ BOOL fReInsertBPIf(PTARGETINFO pstTargetInfo, PREVBPINFO *pstBpInfo)
     ASSERT(pstBpInfo);
 
     ASSERT(pstBpInfo->dwThreadId != 0);
+
+    if(pstTargetInfo->iPrevDebugState == DSTATE_WAITFOR_DBGBREAK)
+    {
+        logtrace(pstLogger, L"%s(): Not reinserting because prev state was DSTATE_WAITFOR_DBGBREAK", __FUNCTIONW__);
+        return TRUE;
+    }
 
     if(pstBpInfo->stBpInfo.iBpType & BPTYPE_USERMULTIHIT || pstBpInfo->stBpInfo.iBpType & BPTYPE_DEBUGGERMULTIHIT)
     {
@@ -743,6 +764,13 @@ void vDebuggerStateChange(PTARGETINFO pstTargetInfo, int iNewState)
 
             break;
         }
+
+        case DSTATE_WAITFOR_DBGBREAK:
+        {
+            // show busy mouse cursor?
+
+            break;
+        }
     }
 
     pstTargetInfo->iPrevDebugState = iCurState;
@@ -779,6 +807,12 @@ void vSetMenuItemsState(PTARGETINFO pstTargetInfo)
         case DSTATE_SINGLESTEP_BEFORE:
         {
             vMiDebuggerDebugging(pstTargetInfo->pstDebugInfoFromGui->hMainMenu);
+            break;
+        }
+
+        case DSTATE_WAITFOR_DBGBREAK:
+        {
+            // TODO: disable all target control menu items?
             break;
         }
 

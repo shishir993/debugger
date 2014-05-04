@@ -103,6 +103,8 @@ DWORD WINAPI dwDebugThreadEntry(LPVOID lpvArgs)
                 break;
             }
 
+            // DSTATE_RUNNING
+            // DSTATE_WAITFOR_DBGBREAK
             default:
             {
                 fContinueProcessing = fProcessDebugEventLoop(pstTargetInfo);
@@ -455,8 +457,9 @@ static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo)
 
             case GD_MENU_CONTINUE:
             {
-                // Re-insert breakpoint if it is a multi-hit BP
-                if(pstTargetInfo->iDebugState == DSTATE_BREAKPOINTWAIT)
+                // Re-insert breakpoint if it is a multi-hit BP AND we did not enter debugging state
+                // from a DebugBreak caused breakpoint exception
+                if(pstTargetInfo->iDebugState == DSTATE_BREAKPOINTWAIT /* sme as DSTATE_DEBUGGING */ )
                 {
                     if(!fReInsertBPIf(pstTargetInfo, &pstTargetInfo->stPrevBpInfo))
                     {
@@ -517,6 +520,8 @@ static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo)
                         logerror(pstLogger, L"%s(): ContinueDebugEvent failed %u\n", __FUNCTIONW__, GetLastError());
                         break;
                     }
+
+                    ZeroMemory(&pstTargetInfo->stPrevBpInfo, sizeof(pstTargetInfo->stPrevBpInfo));
                 }
                 else if(pstTargetInfo->iDebugState == DSTATE_SINGLESTEP_BEFORE)
                 {
@@ -558,8 +563,16 @@ static BOOL fProcessGuiMessage(PTARGETINFO pstTargetInfo)
             case GD_MENU_BREAKALL:
             {
                 // todo: break all
-                // set state to debugging
-                // modify menu items state
+                if(!DebugBreakProcess(pstTargetInfo->stProcessInfo.hProcess))
+                {
+                    logerror(pstLogger, L"%s(): DebugBreakProcess failed %u", GetLastError());
+                    break;
+                    // TODO: show messagebox
+                }
+
+                // wait for breakpoint exception
+                vDebuggerStateChange(pstTargetInfo, DSTATE_WAITFOR_DBGBREAK);
+                
                 break;
             }
 
@@ -666,6 +679,8 @@ static BOOL fProcessDebugEventLoop(PTARGETINFO pstTargetInfo)
 
                     fOnException(pstTargetInfo, &dwContinueStatus);
 
+                    // TODO: clean up this code!
+
                     // TODO: Handle different values of dwContinueStatus
 
                     if(dwContinueStatus == DBG_CONTCUSTOM_ABORT)
@@ -680,10 +695,6 @@ static BOOL fProcessDebugEventLoop(PTARGETINFO pstTargetInfo)
                             return FALSE;
                         }
                     }
-                    else if(dwContinueStatus == DBG_CONTCUSTOM_BREAK)
-                    {
-                        // TODO: enter debugging state, DO NOT continue target
-                    }
                     else
                     {
                         /*
@@ -693,7 +704,8 @@ static BOOL fProcessDebugEventLoop(PTARGETINFO pstTargetInfo)
                          */
 
                         // Check the iDebugState
-                        if(pstTargetInfo->iDebugState != DSTATE_BREAKPOINTWAIT && pstTargetInfo->iDebugState != DSTATE_SINGLESTEP_BEFORE)
+                        if(pstTargetInfo->iDebugState != DSTATE_BREAKPOINTWAIT /* same as DSTATE_DEBUGGING */
+                            && pstTargetInfo->iDebugState != DSTATE_SINGLESTEP_BEFORE)
                         {
                             ASSERT(dwContinueStatus == DBG_CONTINUE || dwContinueStatus == DBG_EXCEPTION_NOT_HANDLED);
 
@@ -892,9 +904,7 @@ BOOL fOnException(PTARGETINFO pstTargetInfo, __out DWORD *pdwContinueStatus)
 
         case DBG_CONTCUSTOM_BREAK:
         {
-            // TODO: Enter debugging state
-            pstTargetInfo->iPrevDebugState = pstTargetInfo->iDebugState;
-            pstTargetInfo->iDebugState = DSTATE_DEBUGGING;
+            vDebuggerStateChange(pstTargetInfo, DSTATE_DEBUGGING);
             
             // Doesn't matter because we will not call ContinuDebugEvent now
             // so that the target process does not resume execution
