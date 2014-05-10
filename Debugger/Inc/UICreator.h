@@ -15,6 +15,8 @@ typedef struct _TabPageInfo {
     HWND hListThreads;
     HWND hEditCommand;
     HWND hStaticCommand;
+
+    HFONT hFixedFont;
 }TABPAGEINFO, *PTABPAGEINFO;
 
 BOOL fCreateMainTabControl(HWND hMainWnd, __out HWND *phTabControl, __out DWORD *pdwErrCode);

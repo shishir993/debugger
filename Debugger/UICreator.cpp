@@ -13,8 +13,19 @@ static int aiColumnSizePercent_Regs[] = { 15, 85 };
 static WCHAR *aszColumnNames_Threads[] = { L"ThreadId", L"EIPLocation", L"Function", L"Type", L"Priority" };
 static WCHAR *aszColumnNames_Regs[] = { L"Name", L"Value" };
 
+struct _FontSelection {
+    LOGFONT stLogFont;
+    TEXTMETRIC stTextMetric;
+};
+
 // File local functions
 static BOOL fInsertTabItem(HWND hTab, WCHAR *pszText, __out int *piNewIndex, __out DWORD *pdwErrCode);
+BOOL fGetFixedWidthFont(HWND hWindow, HFONT *phFont);
+static int CALLBACK EnumFontCallback(
+    const LOGFONT *lpelfe,
+    const TEXTMETRIC *lpntme,
+    DWORD FontType,
+    LPARAM lParam);
 
 BOOL fCreateMainTabControl(HWND hMainWnd, __out HWND *phTabControl, DWORD *pdwErrCode)
 {
@@ -59,6 +70,8 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
 
     int iNewIndex = -1;
     HWND hEditDisass, hListCStack, hListRegisters, hListThreads, hTabBottom, hEditCommand, hStaticCommand;
+
+    HFONT hFixedFont = NULL;
 
     // Init all handles to NULL
     hEditDisass = hListCStack = hListRegisters = hListThreads = hTabBottom = hEditCommand = hStaticCommand = NULL;
@@ -110,6 +123,12 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
     int h75 = tabHeight * 0.75;         // height 3/4
     int h25 = tabHeight - h75;          // height 1/4
 
+    // Get a fixed width font for use in the child controls
+    if(!fGetFixedWidthFont(hTab, &hFixedFont))
+    {
+        goto error_return;
+    }
+
     // Create the disass window
     hEditDisass = CreateWindow( 
                             WC_EDIT, 
@@ -125,6 +144,7 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                             NULL);
 
     ISNULL_GOTO(hEditDisass, error_return);
+    SendMessage(hEditDisass, WM_SETFONT, (WPARAM)hFixedFont, FALSE);
 
     RECT rcTemp;
 
@@ -161,6 +181,8 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                                     NULL);
 
     ISNULL_GOTO(hListRegisters, error_return);
+
+    SendMessage(hListRegisters, WM_SETFONT, (WPARAM)hFixedFont, FALSE);
     GetWindowRect(hListRegisters, &rcTemp);
 
     // Initialize columns
@@ -184,6 +206,8 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
                                     NULL);
 
     ISNULL_GOTO(hListThreads, error_return);
+    SendMessage(hListThreads, WM_SETFONT, (WPARAM)hFixedFont, FALSE);
+
     GetWindowRect(hListThreads, &rcTemp);
 
     // Initialize columns
@@ -250,6 +274,7 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
     pstTabPageInfo->hStaticCommand = hStaticCommand;
     pstTabPageInfo->hTabBottom = hTabBottom;
     pstTabPageInfo->iTabIndex = iNewIndex;
+    pstTabPageInfo->hFixedFont = hFixedFont;
 
     return TRUE;
 
@@ -309,6 +334,9 @@ void vDeleteTabPage(HWND hTab, PTABPAGEINFO pstTabPageInfo)
     DestroyWindow(pstTabPageInfo->hEditCommand);
     DestroyWindow(pstTabPageInfo->hTabBottom);
 
+    // Delete the font GDI object
+    DeleteObject(pstTabPageInfo->hFixedFont);
+
     // Remove the tab item
     SendMessage(hTab, TCM_DELETEITEM, (int)pstTabPageInfo->iTabIndex, (LPARAM)NULL);
 }
@@ -325,4 +353,62 @@ BOOL fSetTabPageText(HWND hTab, int iTabIndex, PWCHAR pszTabText)
     stTcItem.pszText = pszTabText;
 
     return SendMessage(hTab, TCM_SETITEM, iTabIndex, (LPARAM)&stTcItem);
+}
+
+BOOL fGetFixedWidthFont(HWND hWindow, HFONT *phFont)
+{
+    ASSERT(phFont);
+
+    LOGFONT stLogFont = {0};
+    struct _FontSelection stFontSel;
+
+    stLogFont.lfCharSet = ANSI_CHARSET;
+    stLogFont.lfPitchAndFamily = FIXED_PITCH | FF_MODERN;
+    HRESULT hr = StringCchCopy(stLogFont.lfFaceName, LF_FACESIZE, L"Consolas");
+    if(FAILED(hr))
+    {
+        logerror(pstLogger, L"%s(): StringCchCopy() failed %u.", __FUNCTIONW__, GetLastError());
+        return FALSE;
+    }
+
+    // 1. EnumFontFamilies to enumerate all styles
+    int ret = EnumFontFamiliesEx(GetDC(hWindow), &stLogFont, EnumFontCallback, (LPARAM)&stFontSel, 0);
+    if(ret != 0)
+    {
+        logerror(pstLogger, L"%s(): Could not select requested font %u.", __FUNCTIONW__, GetLastError());
+        return FALSE;
+    }
+
+    // 2. Populate LOGFONT and call CreateFontIndirect
+    stFontSel.stLogFont.lfWeight = FW_NORMAL;
+    stFontSel.stLogFont.lfHeight = -MulDiv(10, GetDeviceCaps(GetDC(hWindow), LOGPIXELSY), 72);
+    stFontSel.stLogFont.lfWidth = 0;
+
+    HFONT hf = CreateFontIndirect(&stFontSel.stLogFont);
+    if(!hf)
+    {
+        logerror(pstLogger, L"%s(): CreateFontIndirect() failed %u.", __FUNCTIONW__, GetLastError());
+        return FALSE;
+    }
+
+    *phFont = hf;
+    return TRUE;
+}
+
+int CALLBACK EnumFontCallback(
+    const LOGFONT *lpelfe,
+    const TEXTMETRIC *lpntme,
+    DWORD FontType,
+    LPARAM lParam)
+{
+    // Select a normal non-italic style
+    if(lpelfe->lfWeight == FW_NORMAL && lpelfe->lfItalic != TRUE)
+    {
+        memcpy(&((struct _FontSelection*)lParam)->stLogFont, lpelfe, sizeof(*lpelfe));
+        memcpy(&((struct _FontSelection*)lParam)->stTextMetric, lpntme, sizeof(*lpntme));
+        
+        return 0;
+    }
+
+    return 1;
 }
