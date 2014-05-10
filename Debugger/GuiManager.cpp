@@ -637,7 +637,7 @@ BOOL fGuiUpdateThreadsList(HWND hThreadListView, PLV_THREADINFO pstLvThreadInfo,
         // Construct the strings
         swprintf_s(szThreadId, _countof(szThreadId), L"%u", pstLvThreadInfo[index].dwThreadId);
         swprintf_s(szEipLocation, _countof(szEipLocation), L"0x%08x", pstLvThreadInfo[index].dwEIPLocation);
-        swprintf_s(szFunctionName, _countof(szFunctionName), L"0x%08x", pstLvThreadInfo[index].szFunction);
+        swprintf_s(szFunctionName, _countof(szFunctionName), L"%s", pstLvThreadInfo[index].szFunction);
 
         ASSERT(pstLvThreadInfo[index].thType == THTYPE_MAIN || pstLvThreadInfo[index].thType == THTYPE_WORKER);
         swprintf_s(szType, _countof(szType), L"%s", aszThreadTypes[pstLvThreadInfo[index].thType]);
