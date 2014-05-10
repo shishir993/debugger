@@ -865,9 +865,9 @@ BOOL fOnException(PTARGETINFO pstTargetInfo, __out DWORD *pdwContinueStatus)
             pstTargetInfo->dwSSThreadId = lpDebugEvent->dwThreadId;
             pstTargetInfo->dwSSTargetAddr = (DWORD)lpDebugEvent->u.Exception.ExceptionRecord.ExceptionAddress;
 
-            if(!fSetTrapFlag(pstTargetInfo->phtThreads, pstTargetInfo->stPrevBpInfo.dwThreadId))
+            if(!fSetTrapFlag(pstTargetInfo->phtThreads, pstTargetInfo->dwSSThreadId))
             {
-                logerror(pstLogger, L"%s(): Unable to set TF in thread ID %u", __FUNCTIONW__, pstTargetInfo->stPrevBpInfo.dwThreadId);
+                logerror(pstLogger, L"%s(): Unable to set TF in thread ID %u", __FUNCTIONW__, pstTargetInfo->dwSSThreadId);
                 // TODO: messagebox
             }
             else
