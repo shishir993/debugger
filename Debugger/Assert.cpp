@@ -13,9 +13,11 @@ void vAssert(const char* pszFile, UINT uLine)
     // Even when a GUI program explicitly opens a console window, exiting the program causes
     // the console also to be closed immediately. So we cannot see where the assertion failed.
 
-#ifdef _DEBUG       // just in case this code is called without using ASSERT macro
-    __asm int 3        
-#endif
+    if(IsDebuggerPresent())
+    {
+        fprintf(stderr, "Debugger is present. Causing a breakpoint exception.\n");
+        __asm int 3
+    }
 
 	exit(CE_ASSERT_FAILED);
 }
