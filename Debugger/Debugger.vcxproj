@@ -42,11 +42,11 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <LinkIncremental>true</LinkIncremental>
-    <IncludePath>$(VC_IncludePath);$(UniversalCRT_IncludePath);$(WindowsSDK_IncludePath);</IncludePath>
+    <IncludePath>$(VC_IncludePath);$(UniversalCRT_IncludePath);$(WindowsSDK_IncludePath);Lib\include</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(VCInstallDir)include;$(VCInstallDir)atlmfc\include;$(WindowsSdkDir)include;$(FrameworkSDKDir)\include;</IncludePath>
+    <IncludePath>$(VC_IncludePath);$(UniversalCRT_IncludePath);$(WindowsSDK_IncludePath);Lib\include</IncludePath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -132,7 +132,24 @@
     <ClInclude Include="Inc\UICommon.h" />
     <ClInclude Include="Inc\UICreator.h" />
     <ClInclude Include="Inc\WndProc.h" />
-    <ClInclude Include="Lib\Debug\CHelpLibDll.h" />
+    <ClInclude Include="Lib\include\Assert.h" />
+    <ClInclude Include="Lib\include\BinarySearchTree.h" />
+    <ClInclude Include="Lib\include\CommonInclude.h" />
+    <ClInclude Include="Lib\include\DbgHelpers.h" />
+    <ClInclude Include="Lib\include\Defines.h" />
+    <ClInclude Include="Lib\include\General.h" />
+    <ClInclude Include="Lib\include\GuiFunctions.h" />
+    <ClInclude Include="Lib\include\Hashtable.h" />
+    <ClInclude Include="Lib\include\Helpers.h" />
+    <ClInclude Include="Lib\include\InternalDefines.h" />
+    <ClInclude Include="Lib\include\IOFunctions.h" />
+    <ClInclude Include="Lib\include\LinkedList.h" />
+    <ClInclude Include="Lib\include\MemFunctions.h" />
+    <ClInclude Include="Lib\include\ProcessFunctions.h" />
+    <ClInclude Include="Lib\include\Queue.h" />
+    <ClInclude Include="Lib\include\RArray.h" />
+    <ClInclude Include="Lib\include\Stack.h" />
+    <ClInclude Include="Lib\include\StringFunctions.h" />
     <ClInclude Include="Res\resource.h" />
   </ItemGroup>
   <ItemGroup>

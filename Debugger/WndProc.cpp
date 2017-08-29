@@ -282,9 +282,9 @@ static BOOL fStartDebugSession(HWND hMainWindow, struct _DbgSessionStart *pstSes
     
     DWORD dwWaitResult = WAIT_FAILED;
 
-    if(!fChlMmAlloc((void**)&pDebugInfo, sizeof(DEBUGINFO), &dwErrorCode))
+    if(FAILED(CHL_MmAlloc((void**)&pDebugInfo, sizeof(DEBUGINFO), &dwErrorCode)))
     {
-        swprintf_s(szLogMessage, _countof(szLogMessage), L"%s(): fChlMmAlloc failed: %u", __FUNCTIONW__, dwErrorCode);
+        swprintf_s(szLogMessage, _countof(szLogMessage), L"%s(): CHL_MmAlloc failed: %u", __FUNCTIONW__, dwErrorCode);
         vWriteLog(pstLogger, szLogMessage);
         goto error_return;
     }
@@ -315,7 +315,7 @@ static BOOL fStartDebugSession(HWND hMainWindow, struct _DbgSessionStart *pstSes
 
     WCHAR szPIDToDisplay[SLEN_COMMON32];
 
-    PWCHAR pszTabText = NULL;
+    PCWSTR pszTabText = NULL;
 
     if(pstSessionInfo->fDebuggingActiveProcess)
     {
@@ -324,7 +324,7 @@ static BOOL fStartDebugSession(HWND hMainWindow, struct _DbgSessionStart *pstSes
     }
     else
     {
-        pszTabText = pszChlSzGetFilenameFromPath(
+        pszTabText = CHL_SzGetFilenameFromPath(
                             pstSessionInfo->szTargetPath, 
                             wcsnlen_s(pstSessionInfo->szTargetPath, _countof(pstSessionInfo->szTargetPath)));
     }

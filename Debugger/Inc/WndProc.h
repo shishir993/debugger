@@ -10,7 +10,7 @@
 #include "UICommon.h"
 #include "Logger.h"
 #include "UICreator.h"
-#include "CHelpLibDll.h"
+#include "Defines.h"
 
 typedef struct _DbgSessionStart {
     BOOL fDebuggingActiveProcess;

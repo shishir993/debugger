@@ -1,10 +1,10 @@
 
 #include "Inc\DebuggerDP.h"
 
-BOOL CALLBACK DebuggerDP(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
+BOOL CALLBACK DebuggerDP(HWND hDlg, UINT message, WPARAM /*wParam*/, LPARAM lParam)
 {
     RECT rcOwner;
-    RECT rcTabAdjust;
+    // RECT rcTabAdjust;
 
     switch(message)
 	{
@@ -41,10 +41,10 @@ BOOL CALLBACK DebuggerDP(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 		case WM_COMMAND:
 		{
 			// handle commands from child controls
-			switch(LOWORD(wParam))
-			{
+			//switch(LOWORD(wParam))
+			//{
 
-			}
+			//}
 			return FALSE;
 		}
 

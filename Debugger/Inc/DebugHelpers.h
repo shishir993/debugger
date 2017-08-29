@@ -3,7 +3,7 @@
 #define _DEBUGTHREADHELPERS_H
 
 #include "Common.h"
-#include "CHelpLibDll.h"
+#include "Defines.h"
 #include "DebugCommon.h"
 #include "GuiDebugCommon.h"
 

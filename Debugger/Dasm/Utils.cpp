@@ -1,6 +1,6 @@
 
 #include "Utils.h"
-#include "CHelpLibDll.h"
+#include "Defines.h"
 
 /* Util_fSplitModRMByte()
  * Given the ModR/M byte value, returns the individual fields:
@@ -112,7 +112,7 @@ BOOL Util_fDumpIMAGE_IMPORT_DESCRIPTORS(DWORD rva, DWORD dwSize,
 	WCHAR wszTimeStamp[32];
 
 	// First get the file pointer of the first IMAGE_IMPORT_DESCRIPTOR
-	if( !fChlPsGetEnclosingSectionHeader(rva, pNTHeaders, &pImgSecHeader))
+	if( !CHL_PsGetEnclosingSectionHeader(rva, pNTHeaders, &pImgSecHeader))
 	{
 		wprintf_s(L"fDumpIMAGE_IMPORT_DESCRIPTOR(): Unable to retrieve section header\n");
 		wprintf_s(L"rva = 0x%xh, dwSize = 0x%xh, pNTHeaders = %p, dwFileBase = 0x%08xh\n",
@@ -137,7 +137,7 @@ BOOL Util_fDumpIMAGE_IMPORT_DESCRIPTORS(DWORD rva, DWORD dwSize,
 			_wctime_s(wszTimeStamp, _countof(wszTimeStamp), (time_t*)&pImports->TimeDateStamp)
 			== 0 )
 		{
-			wprintf_s(L"    TimeDateStamp:       %xh %S\n", pImports->TimeDateStamp, wszTimeStamp);
+			wprintf_s(L"    TimeDateStamp:       %xh %s\n", pImports->TimeDateStamp, wszTimeStamp);
 		}
 		wprintf_s(L"    ForwarderChain:      %xh\n", pImports->ForwarderChain);
 		if(pImports->Name)

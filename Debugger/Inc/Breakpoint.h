@@ -3,9 +3,9 @@
 #define _BREAKPOINTS_H
 
 #include "Common.h"
-#include "CHelpLibDll.h"
+#include "Defines.h"
 #include "StringLengths.h"
-#include "CHelpLibDll.h"
+#include "Defines.h"
 #include "DebugCommon.h"
 
 #define BPTYPE_USERSINGLEHIT 	    0x0001    // for single stepping (step {out|over}), run to cursor

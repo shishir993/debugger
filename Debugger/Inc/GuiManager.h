@@ -6,7 +6,7 @@
 #include <Psapi.h>
 
 #include "UICommon.h"
-#include "CHelpLibDll.h"
+#include "Defines.h"
 #include "GuiDebugCommon.h"
 
 #define CLEAR_EDITCONTROL(hEditControl)     SendMessage(hEditControl, EM_SETSEL, 0, -1); SendMessage(hEditControl, EM_REPLACESEL, FALSE, (LPARAM)L"")

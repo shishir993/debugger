@@ -38,10 +38,10 @@ DWORD WINAPI dwDebugThreadEntry(LPVOID lpvArgs)
     vWriteLog(pstLogger, L"%s(): Entry", __FUNCTIONW__);
 
     // Reserve memory for holding all information while debugging
-    if(!fChlMmAlloc((void**)&pstTargetInfo, sizeof(TARGETINFO), &dwErrCode))
+    if(FAILED(CHL_MmAlloc((void**)&pstTargetInfo, sizeof(TARGETINFO), &dwErrCode)))
     {
-        vWriteLog(pstLogger, L"%s(): fChlMmAlloc() failed: %u", __FUNCTIONW__, dwErrCode);
-        vChlMmFree(&lpvArgs);
+        vWriteLog(pstLogger, L"%s(): CHL_MmAlloc() failed: %u", __FUNCTIONW__, dwErrCode);
+        CHL_MmFree(&lpvArgs);
         return dwErrCode;
     }
 
@@ -189,15 +189,15 @@ static BOOL fDebugNewProgram(PTARGETINFO pstTargetInfo)
     pstTargetInfo->dwMainThreadID = ProcInfo.dwThreadId;
 
     // Create the Threads and Dlls hashtable
-    if(!fChlDsCreateHT(&pstTargetInfo->phtThreads, 100, HT_KEY_DWORD, HT_VAL_PTR, TRUE))
+    if(FAILED(CHL_DsCreateHT(&pstTargetInfo->phtThreads, 100, CHL_KT_UINT32, CHL_VT_POINTER, TRUE)))
     {
-        logerror(pstLogger, L"fChlDsCreateHT() failed");
+        logerror(pstLogger, L"CHL_DsCreateHT() failed");
         goto error_return;
     }
 
-    if(!fChlDsCreateHT(&pstTargetInfo->phtDllsLoaded, 500, HT_KEY_DWORD, HT_VAL_STR, TRUE))
+    if(FAILED(CHL_DsCreateHT(&pstTargetInfo->phtDllsLoaded, 500, CHL_KT_UINT32, CHL_VT_WSTRING, TRUE)))
     {
-        logerror(pstLogger, L"fChlDsCreateHT() failed");
+        logerror(pstLogger, L"CHL_DsCreateHT() failed");
         goto error_return;
     }
 
@@ -213,12 +213,12 @@ static BOOL fDebugNewProgram(PTARGETINFO pstTargetInfo)
 error_return:
     if(pstTargetInfo->phtDllsLoaded)
     {
-        fChlDsDestroyHT(pstTargetInfo->phtDllsLoaded);
+        CHL_DsDestroyHT(pstTargetInfo->phtDllsLoaded);
     }
 
     if(pstTargetInfo->phtThreads)
     {
-        fChlDsDestroyHT(pstTargetInfo->phtThreads);
+        CHL_DsDestroyHT(pstTargetInfo->phtThreads);
     }
 
     if(pstTargetInfo->pListBreakpoint)
@@ -247,15 +247,15 @@ static BOOL fDebugActiveProcess(PTARGETINFO pstTargetInfo)
     }
 
     // Create the Threads and Dlls hashtable
-    if(!fChlDsCreateHT(&pstTargetInfo->phtThreads, 100, HT_KEY_DWORD, HT_VAL_PTR, TRUE))
+    if(FAILED(CHL_DsCreateHT(&pstTargetInfo->phtThreads, 100, CHL_KT_UINT32, CHL_VT_POINTER, TRUE)))
     {
-        logerror(pstLogger, L"fChlDsCreateHT() failed");
+        logerror(pstLogger, L"CHL_DsCreateHT() failed");
         goto error_return;
     }
 
-    if(!fChlDsCreateHT(&pstTargetInfo->phtDllsLoaded, 500, HT_KEY_DWORD, HT_VAL_STR, TRUE))
+    if(FAILED(CHL_DsCreateHT(&pstTargetInfo->phtDllsLoaded, 500, CHL_KT_UINT32, CHL_VT_WSTRING, TRUE)))
     {
-        logerror(pstLogger, L"fChlDsCreateHT() failed");
+        logerror(pstLogger, L"CHL_DsCreateHT() failed");
         goto error_return;
     }
 
@@ -338,12 +338,12 @@ static BOOL fDebugActiveProcess(PTARGETINFO pstTargetInfo)
 error_return:
     if(pstTargetInfo->phtDllsLoaded)
     {
-        fChlDsDestroyHT(pstTargetInfo->phtDllsLoaded);
+        CHL_DsDestroyHT(pstTargetInfo->phtDllsLoaded);
     }
 
     if(pstTargetInfo->phtThreads)
     {
-        fChlDsDestroyHT(pstTargetInfo->phtThreads);
+        CHL_DsDestroyHT(pstTargetInfo->phtThreads);
     }
 
     if(pstTargetInfo->pListBreakpoint)
@@ -377,9 +377,9 @@ static void vOnThisThreadExit(PTARGETINFO *ppstTargetInfo)
     if(!plocal->fDetachOnDebuggerExit)
     {
         // Notify Gui thread of exit
-        if(!fChlMmAlloc((void**)&pstGuiComm, sizeof(GUIDBGCOMM), &dwError))
+        if(FAILED(CHL_MmAlloc((void**)&pstGuiComm, sizeof(GUIDBGCOMM), &dwError)))
         {
-            logerror(pstLogger, L"%s(): fChlMmAlloc() failed %u", __FUNCTIONW__, dwError);
+            logerror(pstLogger, L"%s(): CHL_MmAlloc() failed %u", __FUNCTIONW__, dwError);
         }
         else
         {
@@ -401,13 +401,13 @@ static void vOnThisThreadExit(PTARGETINFO *ppstTargetInfo)
     CloseHandle(plocal->stProcessInfo.hFile);
 
     // free threads table
-    if(plocal->phtThreads && !fChlDsDestroyHT(plocal->phtThreads))
+    if(plocal->phtThreads && !CHL_DsDestroyHT(plocal->phtThreads))
     {
         logerror(pstLogger, L"(%s): Unable to destroy DLL hash table", __FUNCTIONW__);
     }
 
     // free Dlls table
-    if(plocal->phtDllsLoaded && !fChlDsDestroyHT(plocal->phtDllsLoaded))
+    if(plocal->phtDllsLoaded && !CHL_DsDestroyHT(plocal->phtDllsLoaded))
     {
         logerror(pstLogger, L"(%s): Unable to destroy DLL hash table", __FUNCTIONW__);
     }
@@ -419,10 +419,10 @@ static void vOnThisThreadExit(PTARGETINFO *ppstTargetInfo)
     }
 
     // Free the memory occupied by DEBUGINFO
-    vChlMmFree((void**)&plocal->pstDebugInfoFromGui);
+    CHL_MmFree((void**)&plocal->pstDebugInfoFromGui);
 
     // Finally, free the memory occupied by TARGETINFO
-    vChlMmFree((void**)&plocal);
+    CHL_MmFree((void**)&plocal);
 
     return;
 }
@@ -994,26 +994,26 @@ BOOL fOnCreateProcess(PTARGETINFO pstTargetInfo)
         memcpy(&(pstTargetInfo->stProcessInfo), &(lpDebugEvent->u.CreateProcessInfo), sizeof(CREATE_PROCESS_DEBUG_INFO));
 
         // Get some additional info about target process's image
-        if(!fChlGnCreateMemMapOfFile(lpDebugEvent->u.CreateProcessInfo.hFile, 0, &pstTargetInfo->hFileMapObj, &pstTargetInfo->hFileMapView))
+        if(!CHL_GnCreateMemMapOfFile(lpDebugEvent->u.CreateProcessInfo.hFile, 0, &pstTargetInfo->hFileMapObj, &pstTargetInfo->hFileMapView))
         {
-            logerror(pstLogger, L"%s(): fChlGnCreateMemMapOfFile() failed %u", __FUNCTIONW__, GetLastError());
+            logerror(pstLogger, L"%s(): CHL_GnCreateMemMapOfFile() failed %u", __FUNCTIONW__, GetLastError());
             goto error_return;
         }
 
-        if(!fChlPsGetNtHeaders(pstTargetInfo->hFileMapView, &pstTargetInfo->pstNtHeaders))
+        if(!CHL_PsGetNtHeaders(pstTargetInfo->hFileMapView, &pstTargetInfo->pstNtHeaders))
         {
-            logerror(pstLogger, L"%s(): fChlPsGetNtHeaders() failed %u", __FUNCTIONW__, GetLastError());
+            logerror(pstLogger, L"%s(): CHL_PsGetNtHeaders() failed %u", __FUNCTIONW__, GetLastError());
             goto error_return;
         }
 
-        if(!fChlPsGetPtrToCode(
+        if(!CHL_PsGetPtrToCode(
                 (DWORD)pstTargetInfo->hFileMapView, 
                 pstTargetInfo->pstNtHeaders, 
                 &pstTargetInfo->dwCodeStart, 
                 &pstTargetInfo->dwCodeSize, 
                 &pstTargetInfo->dwCodeSecVirtAddr))
         {
-            logerror(pstLogger, L"%s(): fChlPsGetPtrToCode() failed %u", __FUNCTIONW__, GetLastError());
+            logerror(pstLogger, L"%s(): CHL_PsGetPtrToCode() failed %u", __FUNCTIONW__, GetLastError());
             goto error_return;
         }
 
@@ -1126,8 +1126,8 @@ BOOL fOnLoadDll(PTARGETINFO pstTargetInfo)
     }
 
     // Insert into the DLLs loaded hashtable
-    if(!fChlDsInsertHT(pstTargetInfo->phtDllsLoaded, &(lpDebugEvent->u.LoadDll.lpBaseOfDll), sizeof(DWORD), wsImageName, 
-        CONV_BYTES_wcsnlen_s(wsImageName, SLEN_MAXPATH) ))
+    if(FAILED(CHL_DsInsertHT(pstTargetInfo->phtDllsLoaded, &(lpDebugEvent->u.LoadDll.lpBaseOfDll), sizeof(DWORD), wsImageName, 
+        CONV_BYTES_wcsnlen_s(wsImageName, SLEN_MAXPATH))))
     {
         logerror(pstLogger, L"Unable to insert 0x%08x:%s into hash", *((DWORD*)lpDebugEvent->u.LoadDll.lpBaseOfDll), wsImageName);
     }
@@ -1148,16 +1148,16 @@ BOOL fOnUnloadDll(PTARGETINFO pstTargetInfo)
     LPDEBUG_EVENT lpDebugEvent = pstTargetInfo->lpDebugEvent;
 
     WCHAR *pws = NULL;
-    int outValSize = 0;
+    int outValSize = sizeof(pws);
 
-    if(!fChlDsFindHT(pstTargetInfo->phtDllsLoaded, &(lpDebugEvent->u.UnloadDll.lpBaseOfDll), sizeof(DWORD), &pws, &outValSize))
+    if(FAILED(CHL_DsFindHT(pstTargetInfo->phtDllsLoaded, &(lpDebugEvent->u.UnloadDll.lpBaseOfDll), sizeof(DWORD), &pws, &outValSize, TRUE)))
     {
         wprintf(L"DLL Unload : [0x%08x] : Image name not found\n", (DWORD)(lpDebugEvent->u.UnloadDll.lpBaseOfDll));
     }
     else
     {
         wprintf(L"DLL Unload : [0x%08x] : %s\n", (DWORD)lpDebugEvent->u.UnloadDll.lpBaseOfDll, pws);
-        fChlDsRemoveHT(pstTargetInfo->phtDllsLoaded, &(lpDebugEvent->u.UnloadDll.lpBaseOfDll), sizeof(DWORD));
+        CHL_DsRemoveHT(pstTargetInfo->phtDllsLoaded, &(lpDebugEvent->u.UnloadDll.lpBaseOfDll), sizeof(DWORD));
     }
 
     --(pstTargetInfo->nCurDllsLoaded);
@@ -1175,7 +1175,7 @@ BOOL fOnOutputDebugString(PTARGETINFO pstTargetInfo)
     WCHAR *pwsDebugString = NULL;
     SIZE_T bytesRead = 0;
 
-    if(!fChlMmAlloc((void**)&pwsDebugString, lpDebugEvent->u.DebugString.nDebugStringLength * sizeof(WCHAR), NULL))
+    if(FAILED(CHL_MmAlloc((void**)&pwsDebugString, lpDebugEvent->u.DebugString.nDebugStringLength * sizeof(WCHAR), NULL)))
     {
         logerror(pstLogger, L"OUTPUT_DEBUG_STRING_EVENT: Could not allocate memory!!");
     }
@@ -1202,9 +1202,9 @@ BOOL fOnOutputDebugString(PTARGETINFO pstTargetInfo)
                 lpDebugEvent->u.DebugString.nDebugStringLength * sizeof(char), 
                 &bytesRead);
 
-            wprintf(L"OutputDebugString: [%u][%S]\n", bytesRead, pwsDebugString);
+            wprintf(L"OutputDebugString: [%u][%s]\n", bytesRead, pwsDebugString);
         }
-        vChlMmFree((void**)&pwsDebugString);
+        CHL_MmFree((void**)&pwsDebugString);
     }
 
     return TRUE;

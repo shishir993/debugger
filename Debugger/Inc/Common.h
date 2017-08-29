@@ -13,4 +13,14 @@
 #include "Logger.h"
 #include "CustomEvents.h"
 
+// ** CHelpLib includes **
+
+#include "GuiFunctions.h"
+#include "MemFunctions.h"
+#include "LinkedList.h"
+#include "Hashtable.h"
+#include "ProcessFunctions.h"
+#include "StringFunctions.h"
+#include "General.h"
+
 #endif // _COMMON_H

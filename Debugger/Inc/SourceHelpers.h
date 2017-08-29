@@ -10,7 +10,7 @@
 #define ISNULL_GOTO(PtrHandle, gotoLocation)    if(ISNULL(PtrHandle)) { goto gotoLocation; }
 #define ISVALID_HANDLE(handle)                  (handle != NULL && handle != INVALID_HANDLE_VALUE)
 
-#define IFPTR_FREE(ptr)                         if(!ISNULL(ptr)) { vChlMmFree((void**)&ptr); }
+#define IFPTR_FREE(ptr)                         if(!ISNULL(ptr)) { CHL_MmFree((void**)&ptr); }
 #define FREE_HANDLE(handle)                     if(ISVALID_HANDLE(handle)) { CloseHandle(handle); } handle = NULL
 
 #define IFPTR_SETVAL(ptr, val)                  if(ptr) { *ptr = val; }

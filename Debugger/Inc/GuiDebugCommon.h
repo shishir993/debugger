@@ -9,7 +9,7 @@
 #define LV_REGS_NUMCOLUMNS    2
 #define LV_THREAD_NUMCOLUMNS  5
 
-#define FREEIF_GUIDBGCOMM(ptr)    if(ptr && ptr->fFreeThis) { vChlMmFree((void**)&ptr); }
+#define FREEIF_GUIDBGCOMM(ptr)    if(ptr && ptr->fFreeThis) { CHL_MmFree((void**)&ptr); }
 
 typedef int THTYPE;
 

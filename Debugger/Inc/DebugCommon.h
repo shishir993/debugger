@@ -4,7 +4,7 @@
 
 #include "Common.h"
 #include "UICreator.h"
-#include "CHelpLibDll.h"
+#include "Defines.h"
 
 #define DSTATE_INVALID                  0
 

@@ -82,11 +82,11 @@ BOOL fAddThread(CHL_HTABLE *phtThreads, DWORD dwThreadId, LPCREATE_THREAD_DEBUG_
 
     LPCREATE_THREAD_DEBUG_INFO pThreadDbgInfo = NULL;
 
-    if(!fChlMmAlloc((void**)&pThreadDbgInfo, sizeof(CREATE_THREAD_DEBUG_INFO), NULL))
+    if(FAILED(CHL_MmAlloc((void**)&pThreadDbgInfo, sizeof(CREATE_THREAD_DEBUG_INFO), NULL)))
         return FALSE;
 
     memcpy(pThreadDbgInfo, lpThreadInfo, sizeof(CREATE_THREAD_DEBUG_INFO));
-    return fChlDsInsertHT(phtThreads, &dwThreadId, sizeof(DWORD), pThreadDbgInfo, sizeof(LPCREATE_THREAD_DEBUG_INFO));
+    return SUCCEEDED(CHL_DsInsertHT(phtThreads, &dwThreadId, sizeof(DWORD), pThreadDbgInfo, sizeof(LPCREATE_THREAD_DEBUG_INFO)));
 }
 
 BOOL fRemoveThread(CHL_HTABLE *phtThreads, DWORD dwThreadId, __out LPCREATE_THREAD_DEBUG_INFO lpThreadInfo)
@@ -95,7 +95,7 @@ BOOL fRemoveThread(CHL_HTABLE *phtThreads, DWORD dwThreadId, __out LPCREATE_THRE
 
     DBG_UNREFERENCED_PARAMETER(lpThreadInfo);
 
-    return fChlDsRemoveHT(phtThreads, &dwThreadId, sizeof(DWORD));
+    return CHL_DsRemoveHT(phtThreads, &dwThreadId, sizeof(DWORD));
 }
 
 BOOL fGetThreadHandle(CHL_HTABLE *phtThreads, DWORD dwThreadId, __out HANDLE *phThread)
@@ -106,7 +106,7 @@ BOOL fGetThreadHandle(CHL_HTABLE *phtThreads, DWORD dwThreadId, __out HANDLE *ph
     LPCREATE_THREAD_DEBUG_INFO pThreadDbgInfo = NULL;
     int outValSize = 0;
 
-    if(!fChlDsFindHT(phtThreads, &dwThreadId, sizeof(DWORD), &pThreadDbgInfo, &outValSize))
+    if(FAILED(CHL_DsFindHT(phtThreads, &dwThreadId, sizeof(DWORD), &pThreadDbgInfo, &outValSize, TRUE)))
         return FALSE;
 
     ASSERT(outValSize == sizeof(LPCREATE_THREAD_DEBUG_INFO));
@@ -127,14 +127,14 @@ BOOL fDeleteThreadsTable(CHL_HTABLE *phtThreads)
 
     int keysize, valsize;
 
-    fChlDsInitIteratorHT(&itr);
-    while(fChlDsGetNextHT(phtThreads, &itr, &dwThreadID, &keysize, &ppThreadDbgInfo, &valsize))
+    CHL_DsInitIteratorHT(phtThreads, &itr);
+    while(SUCCEEDED(CHL_DsGetNextHT(&itr, &dwThreadID, &keysize, &ppThreadDbgInfo, &valsize, TRUE)))
     {
         ASSERT(ppThreadDbgInfo && *ppThreadDbgInfo);
-        vChlMmFree((void**)ppThreadDbgInfo);
+        CHL_MmFree((void**)ppThreadDbgInfo);
     }
     
-    return fChlDsDestroyHT(phtThreads);
+    return CHL_DsDestroyHT(phtThreads);
 }
 
 BOOL fSuspendAllThreads(CHL_HTABLE *phtThreads)
@@ -149,8 +149,8 @@ BOOL fSuspendAllThreads(CHL_HTABLE *phtThreads)
     int keysize, valsize;
     BOOL fRetVal = TRUE;
 
-    fChlDsInitIteratorHT(&itr);
-    while(fChlDsGetNextHT(phtThreads, &itr, &dwThreadID, &keysize, &pThreadDbgInfo, &valsize))
+    CHL_DsInitIteratorHT(phtThreads, &itr);
+    while(SUCCEEDED(CHL_DsGetNextHT(&itr, &dwThreadID, &keysize, &pThreadDbgInfo, &valsize, TRUE)))
     {
         ASSERT(pThreadDbgInfo);
         ASSERT(ISVALID_HANDLE(pThreadDbgInfo->hThread));
@@ -180,8 +180,8 @@ BOOL fResumeAllThreads(CHL_HTABLE *phtThreads)
     int keysize, valsize;
     BOOL fRetVal = TRUE;
 
-    fChlDsInitIteratorHT(&itr);
-    while(fChlDsGetNextHT(phtThreads, &itr, &dwThreadID, &keysize, &pThreadDbgInfo, &valsize))
+    CHL_DsInitIteratorHT(phtThreads, &itr);
+    while(SUCCEEDED(CHL_DsGetNextHT(&itr, &dwThreadID, &keysize, &pThreadDbgInfo, &valsize, TRUE)))
     {
         ASSERT(pThreadDbgInfo);
         ASSERT(ISVALID_HANDLE(pThreadDbgInfo->hThread));
@@ -205,16 +205,16 @@ BOOL fIsNtDllLoaded(CHL_HTABLE *phtDllTable, __out DWORD *pdwBaseAddress)
     CHL_HT_ITERATOR itr;
 
     DWORD dwBase = 0;
-    WCHAR *psDllName = NULL;
-    WCHAR *psDllFilename = NULL;
+    PCWSTR psDllName = NULL;
+    PCWSTR psDllFilename = NULL;
 
     int keysize, valsize;
 
-    fChlDsInitIteratorHT(&itr);
-    while(fChlDsGetNextHT(phtDllTable, &itr, &dwBase, &keysize, &psDllName, &valsize))
+    CHL_DsInitIteratorHT(phtDllTable, &itr);
+    while(SUCCEEDED(CHL_DsGetNextHT(&itr, &dwBase, &keysize, &psDllName, &valsize, TRUE)))
     {
         ASSERT(psDllName && valsize > 0);
-        if((psDllFilename = pszChlSzGetFilenameFromPath(psDllName, valsize)) == NULL)
+        if((psDllFilename = CHL_SzGetFilenameFromPath(psDllName, valsize)) == NULL)
         {
             logerror(pstLogger, L"fIsNtDllLoaded(): Error reading filename from path: %s\n", psDllName);
             continue;
@@ -575,7 +575,7 @@ BOOL fUpdateThreadsListView(HWND hList, CHL_HTABLE *phtThreads, HANDLE hMainThre
     // Assume 32 max threads now because there is no easy way to get this info
     // from the hashtable
     // TODO: Handle dynamic number of threads
-    if(!fChlMmAlloc((void**)&pstThreadInfo, sizeof(LV_THREADINFO) * 32, NULL))
+    if(FAILED(CHL_MmAlloc((void**)&pstThreadInfo, sizeof(LV_THREADINFO) * 32, NULL)))
     {
         return FALSE;
     }
@@ -583,8 +583,8 @@ BOOL fUpdateThreadsListView(HWND hList, CHL_HTABLE *phtThreads, HANDLE hMainThre
     ZeroMemory(&stContext, sizeof(stContext));
 
     nThreads = 0;
-    fChlDsInitIteratorHT(&itr);
-    while(fChlDsGetNextHT(phtThreads, &itr, &dwThreadID, &keysize, &pThreadDbgInfo, &valsize))
+    CHL_DsInitIteratorHT(phtThreads, &itr);
+    while(SUCCEEDED(CHL_DsGetNextHT(&itr, &dwThreadID, &keysize, &pThreadDbgInfo, &valsize, TRUE)))
     {
         ASSERT(pThreadDbgInfo);
         ASSERT(ISVALID_HANDLE(pThreadDbgInfo->hThread));
@@ -627,7 +627,7 @@ BOOL fUpdateThreadsListView(HWND hList, CHL_HTABLE *phtThreads, HANDLE hMainThre
     // Update listview
     fRetVal &= fGuiUpdateThreadsList(hList, pstThreadInfo, nThreads);
 
-    vChlMmFree((void**)&pstThreadInfo);
+    CHL_MmFree((void**)&pstThreadInfo);
 
     return fRetVal;
 }
@@ -642,7 +642,7 @@ BOOL fUpdateRegistersListView(HWND hList, DWORD dwThreadId)
 
     DWORD adwValues[_countof(apszRegNames)];
 
-    ASSERT(_countof(apszRegNames) == 9);
+    static_assert(_countof(apszRegNames) == 9, "Expected array size");
 
     hThread = OpenThread(THREAD_GET_CONTEXT, FALSE, dwThreadId);
     if(hThread == NULL)
@@ -710,9 +710,6 @@ void vDebuggerStateChange(PTARGETINFO pstTargetInfo, int iNewState)
         case DSTATE_DEBUGGING:
         //case DSTATE_BREAKPOINTWAIT:   // same as DSTATE_DEBUGGING
         {
-            DWORD dwThreadIdToUse;
-            DWORD dwTargetAddrToUse;
-
             // Update UI to have updated target information displayed
             
             // 1. Update threads information

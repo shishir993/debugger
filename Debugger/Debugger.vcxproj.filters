@@ -110,9 +110,6 @@
     <ClInclude Include="Inc\MenuItems.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Lib\Debug\CHelpLibDll.h">
-      <Filter>Libs</Filter>
-    </ClInclude>
     <ClInclude Include="Inc\Debug.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -145,6 +142,60 @@
     </ClInclude>
     <ClInclude Include="Inc\GuiDebugCommon.h">
       <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\include\Assert.h">
+      <Filter>Libs</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\include\BinarySearchTree.h">
+      <Filter>Libs</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\include\CommonInclude.h">
+      <Filter>Libs</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\include\DbgHelpers.h">
+      <Filter>Libs</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\include\Defines.h">
+      <Filter>Libs</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\include\General.h">
+      <Filter>Libs</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\include\GuiFunctions.h">
+      <Filter>Libs</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\include\Hashtable.h">
+      <Filter>Libs</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\include\Helpers.h">
+      <Filter>Libs</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\include\InternalDefines.h">
+      <Filter>Libs</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\include\IOFunctions.h">
+      <Filter>Libs</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\include\LinkedList.h">
+      <Filter>Libs</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\include\MemFunctions.h">
+      <Filter>Libs</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\include\ProcessFunctions.h">
+      <Filter>Libs</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\include\Queue.h">
+      <Filter>Libs</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\include\RArray.h">
+      <Filter>Libs</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\include\Stack.h">
+      <Filter>Libs</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\include\StringFunctions.h">
+      <Filter>Libs</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

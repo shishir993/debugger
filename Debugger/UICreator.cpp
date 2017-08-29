@@ -2,7 +2,7 @@
 #include "Inc\UICreator.h"
 #include "Inc\DebuggerDP.h"
 #include "Inc\SourceHelpers.h"
-#include "CHelpLibDll.h"
+#include "Defines.h"
 
 extern HINSTANCE g_hMainInstance;
 extern PLOGGER pstLogger;
@@ -100,9 +100,9 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
     WCHAR szTextCommand[] = L"Command:";
     int iTextWidth, iTextHeight;
     
-    if(!fChlGuiGetTextArea(hTab, wcslen(szTextCommand), &iTextWidth, &iTextHeight))
+    if(!CHL_GuiGetTextArea(hTab, wcslen(szTextCommand), &iTextWidth, &iTextHeight))
     {
-        logerror(pstLogger, L"%s(): fChlGuiGetTextArea() failed %u", GetLastError());
+        logerror(pstLogger, L"%s(): CHL_GuiGetTextArea() failed %u", GetLastError());
         goto error_return;
     }
 
@@ -186,7 +186,7 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
     GetWindowRect(hListRegisters, &rcTemp);
 
     // Initialize columns
-    if(!fChlGuiInitListViewColumns(hListRegisters, aszColumnNames_Regs, NELEMS_ARRAY(aszColumnNames_Regs), aiColumnSizePercent_Regs))
+    if(!CHL_GuiInitListViewColumns(hListRegisters, aszColumnNames_Regs, NELEMS_ARRAY(aszColumnNames_Regs), aiColumnSizePercent_Regs))
     {
         // todo: log error
         goto error_return;
@@ -211,7 +211,7 @@ BOOL fCreateTabPage(HWND hTab, __out PTABPAGEINFO pstTabPageInfo, __out DWORD *p
     GetWindowRect(hListThreads, &rcTemp);
 
     // Initialize columns
-    if(!fChlGuiInitListViewColumns(hListThreads, aszColumnNames_Threads, NELEMS_ARRAY(aszColumnNames_Threads), aiColumnSizePercent_Threads))
+    if(!CHL_GuiInitListViewColumns(hListThreads, aszColumnNames_Threads, NELEMS_ARRAY(aszColumnNames_Threads), aiColumnSizePercent_Threads))
     {
         // todo: log error
         goto error_return;
@@ -341,7 +341,7 @@ void vDeleteTabPage(HWND hTab, PTABPAGEINFO pstTabPageInfo)
     SendMessage(hTab, TCM_DELETEITEM, (int)pstTabPageInfo->iTabIndex, (LPARAM)NULL);
 }
 
-BOOL fSetTabPageText(HWND hTab, int iTabIndex, PWCHAR pszTabText)
+BOOL fSetTabPageText(HWND hTab, int iTabIndex, PCWSTR pszTabText)
 {
     ASSERT(ISVALID_HANDLE(hTab));
     ASSERT(iTabIndex >= 0);
@@ -350,7 +350,7 @@ BOOL fSetTabPageText(HWND hTab, int iTabIndex, PWCHAR pszTabText)
     TCITEM stTcItem = {0};
 
     stTcItem.mask = TCIF_TEXT;
-    stTcItem.pszText = pszTabText;
+    stTcItem.pszText = (LPWSTR)pszTabText;
 
     return SendMessage(hTab, TCM_SETITEM, iTabIndex, (LPARAM)&stTcItem);
 }
@@ -398,7 +398,7 @@ BOOL fGetFixedWidthFont(HWND hWindow, HFONT *phFont)
 int CALLBACK EnumFontCallback(
     const LOGFONT *lpelfe,
     const TEXTMETRIC *lpntme,
-    DWORD FontType,
+    DWORD /*FontType*/,
     LPARAM lParam)
 {
     // Select a normal non-italic style
@@ -406,9 +406,7 @@ int CALLBACK EnumFontCallback(
     {
         memcpy(&((struct _FontSelection*)lParam)->stLogFont, lpelfe, sizeof(*lpelfe));
         memcpy(&((struct _FontSelection*)lParam)->stTextMetric, lpntme, sizeof(*lpntme));
-        
         return 0;
     }
-
     return 1;
 }

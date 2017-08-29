@@ -4,7 +4,7 @@
 
 #include "Common.h"
 #include "UICreator.h"
-#include "CHelpLibDll.h"
+#include "Defines.h"
 #include "Breakpoint.h"
 #include "DebugCommon.h"
 

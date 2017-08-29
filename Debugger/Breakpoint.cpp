@@ -18,18 +18,18 @@ BOOL fBpInitialize(__out PBPLIST *ppstBpList)
     DWORD dwErrorCode = ERROR_SUCCESS;
     PBPLIST pstBpList = NULL;
 
-    if(!fChlMmAlloc((void**)&pstBpList, sizeof(BPLIST), &dwErrorCode))
+    if(FAILED(CHL_MmAlloc((void**)&pstBpList, sizeof(BPLIST), &dwErrorCode)))
     {
-        logerror(pstLogger, L"%s(): fChlMmAlloc() failed %u", __FUNCTIONW__, GetLastError());
+        logerror(pstLogger, L"%s(): CHL_MmAlloc() failed %u", __FUNCTIONW__, GetLastError());
         return FALSE;
     }
 
     // pstBpList->aiIdentifiers[] will be zero filled
 
-    if(!fChlDsCreateLL(&pstBpList->pstLinkedListBp, LL_VAL_PTR, MAX_BREAKPOINTS))
+    if(!CHL_DsCreateLL(&pstBpList->pstLinkedListBp, CHL_VT_POINTER, MAX_BREAKPOINTS))
     {
-        logerror(pstLogger, L"%s(): fChlDsCreateLL() failed %u", __FUNCTIONW__, GetLastError());
-        vChlMmFree((void**)&pstBpList);
+        logerror(pstLogger, L"%s(): CHL_DsCreateLL() failed %u", __FUNCTIONW__, GetLastError());
+        CHL_MmFree((void**)&pstBpList);
         return FALSE;
     }
 
@@ -42,9 +42,9 @@ BOOL fBpTerminate(PBPLIST pBreakpoints)
     ASSERT(pBreakpoints);
     ASSERT(pBreakpoints->pstLinkedListBp);
 
-    BOOL fRetVal = fChlDsDestroyLL(pBreakpoints->pstLinkedListBp);
+    BOOL fRetVal = CHL_DsDestroyLL(pBreakpoints->pstLinkedListBp);
 
-    vChlMmFree((void**)&pBreakpoints);
+    CHL_MmFree((void**)&pBreakpoints);
 
     return fRetVal;
 }
@@ -91,9 +91,9 @@ BOOL fBpInsert(PBPLIST pstBpList, PBPINFO pstBpInfo, PTARGETINFO pstTargetInfo, 
     stBreakpoint.stActualBp.fResolved = TRUE;
 
     // Insert into list of breakpoints
-    if(!fChlDsInsertLL(pstBpList->pstLinkedListBp, &stBreakpoint, sizeof(stBreakpoint)))
+    if(!CHL_DsInsertLL(pstBpList->pstLinkedListBp, &stBreakpoint, sizeof(stBreakpoint)))
     {
-        logerror(pstLogger, L"%s(): fChlDsInsertLL() failed %u", __FUNCTIONW__, GetLastError());
+        logerror(pstLogger, L"%s(): CHL_DsInsertLL() failed %u", __FUNCTIONW__, GetLastError());
 
         // Remove the inserted breakpoint
         if(stBreakpoint.nReferences == 1)
@@ -123,15 +123,22 @@ BOOL fBpRemove(PBPLIST pstBpList, PBPINFO pstBpInfo, PTARGETINFO pstTargetInfo)
     // TODO: SOURCE level and using the identifier
 
     BREAKPOINT stBpToFind;
-    PBREAKPOINT pstBpFound = NULL;
+    PBREAKPOINT pstBpFound;
 
     // TODO: assign bpType as well
     stBpToFind.stActualBp.dwAddrInTarget = pstBpInfo->dwTargetAddr;
 
+	int cbOut = sizeof(pstBpFound);
+	if (FAILED(CHL_DsFindLL(pstBpList->pstLinkedListBp, &stBpToFind, fBpCompare, &pstBpFound, &cbOut, FALSE)))
+	{
+		logerror(pstLogger, L"%s(): CHL_DsFindLL() failed %u", __FUNCTIONW__, GetLastError());
+		goto error_return;
+	}
+
     // Remove from the linked list
-    if(!fChlDsRemoveLL(pstBpList->pstLinkedListBp, &stBpToFind, TRUE, fBpCompare, (void**)&pstBpFound))
+    if(FAILED(CHL_DsRemoveLL(pstBpList->pstLinkedListBp, &stBpToFind, TRUE, fBpCompare)))
     {
-        logerror(pstLogger, L"%s(): fChlDsRemoveLL() failed %u", __FUNCTIONW__, GetLastError());
+        logerror(pstLogger, L"%s(): CHL_DsRemoveLL() failed %u", __FUNCTIONW__, GetLastError());
         goto error_return;
     }
 
@@ -148,7 +155,7 @@ BOOL fBpRemove(PBPLIST pstBpList, PBPINFO pstBpInfo, PTARGETINFO pstTargetInfo)
         }
     }
 
-    vChlMmFree((void**)&pstBpFound);
+    CHL_MmFree((void**)&pstBpFound);
     return TRUE;
 
 error_return:
@@ -172,9 +179,10 @@ BOOL fBpFind(PBPLIST pstBpList, __inout PBPINFO pstBpInfo, PINT piBpID)
     stBpToFind.stActualBp.dwAddrInTarget = pstBpInfo->dwTargetAddr;
 
     // Find in linked list
-    if(!fChlDsFindLL(pstBpList->pstLinkedListBp, &stBpToFind, fBpCompare, (void**)&pstBpFound))
+	int cbOut = sizeof(pstBpFound);
+    if(!CHL_DsFindLL(pstBpList->pstLinkedListBp, &stBpToFind, fBpCompare, (void**)&pstBpFound, &cbOut, TRUE))
     {
-        logerror(pstLogger, L"%s(): fChlDsFindLL() failed %u", __FUNCTIONW__, GetLastError());
+        logerror(pstLogger, L"%s(): CHL_DsFindLL() failed %u", __FUNCTIONW__, GetLastError());
         return FALSE;
     }
 

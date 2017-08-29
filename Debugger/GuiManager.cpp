@@ -15,10 +15,10 @@ BOOL fGuiInitialize(__out DWORD *pdwErrCode)
 
     if(pTabThreadMap)
     {
-        fChlDsDestroyHT(pTabThreadMap);
+        CHL_DsDestroyHT(pTabThreadMap);
     }
 
-    if(!fChlDsCreateHT(&pTabThreadMap, iChlDsGetNearestTableSizeIndex(5), HT_KEY_DWORD, HT_VAL_DWORD, FALSE))
+    if(FAILED(CHL_DsCreateHT(&pTabThreadMap, CHL_DsGetNearestSizeIndexHT(5), CHL_KT_UINT32, CHL_VT_UINT32, FALSE)))
     {
         vWriteLog(pstLogger, L"fGuiInitialize(): Cannot create tab thread map");
         goto error_return;
@@ -35,7 +35,7 @@ void vGuiExit()
 {
     if(pTabThreadMap)
     {
-        fChlDsDestroyHT(pTabThreadMap);
+        CHL_DsDestroyHT(pTabThreadMap);
     }
 }
 
@@ -52,7 +52,7 @@ BOOL fGuiAddTab(int tabIndex, DWORD threadId, __out DWORD *pdwErrCode)
     vWriteLog(pstLogger, szDbgMessage); 
 #endif
 
-    return fChlDsInsertHT(pTabThreadMap, &tabIndex, sizeof(tabIndex), &threadId, sizeof(threadId));
+    return SUCCEEDED(CHL_DsInsertHT(pTabThreadMap, &tabIndex, sizeof(tabIndex), &threadId, sizeof(threadId)));
 }
 
 BOOL fGuiRemTab(int tabIndex, __out DWORD *pdwErrCode)
@@ -68,7 +68,7 @@ BOOL fGuiRemTab(int tabIndex, __out DWORD *pdwErrCode)
     vWriteLog(pstLogger, szDbgMessage); 
 #endif
 
-    return fChlDsRemoveHT(pTabThreadMap, &tabIndex, sizeof(tabIndex));
+    return CHL_DsRemoveHT(pTabThreadMap, &tabIndex, sizeof(tabIndex));
 }
 
 BOOL fGuiFindTab(int tabIndex, __out DWORD *pdwThreadId, __out DWORD *pdwErrCode)
@@ -88,7 +88,7 @@ BOOL fGuiFindTab(int tabIndex, __out DWORD *pdwThreadId, __out DWORD *pdwErrCode
     vWriteLog(pstLogger, szDbgMessage); 
 #endif
 
-    if(!fChlDsFindHT(pTabThreadMap, &tabIndex, sizeof(tabIndex), &dwThreadId, &iValSize))
+    if(FAILED(CHL_DsFindHT(pTabThreadMap, &tabIndex, sizeof(tabIndex), &dwThreadId, &iValSize, FALSE)))
         return FALSE;
 
     *pdwThreadId = dwThreadId;
@@ -112,14 +112,14 @@ BOOL fOnExitDetachTargets()
 
     GUIDBGCOMM stGuiDbgComm;
     
-    if(!fChlDsInitIteratorHT(&htItr))
+    if(FAILED(CHL_DsInitIteratorHT(pTabThreadMap, &htItr)))
     {
-        logerror(pstLogger, L"%s(): fChlDsInitIteratorHT() failed %u", GetLastError());
+        logerror(pstLogger, L"%s(): CHL_DsInitIteratorHT() failed %u", GetLastError());
         return FALSE;
     }
 
     logtrace(pstLogger, L"%s(): Iterating through tab list...", __FUNCTIONW__);
-    while(fChlDsGetNextHT(pTabThreadMap, &htItr, &iTabIndex, &keySize, &dwThreadId, &valSize))
+    while(SUCCEEDED(CHL_DsGetNextHT(&htItr, &iTabIndex, &keySize, &dwThreadId, &valSize, FALSE)))
     {
         ASSERT(keySize == sizeof(int) && valSize == sizeof(DWORD));
 
@@ -235,7 +235,7 @@ BOOL CALLBACK fGetProcIdDP(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam
             // Set flag to indicate that we will debug an active process
             pstSessionInfo->fDebuggingActiveProcess = TRUE;
 
-			fChlGuiCenterWindow(hDlg);
+			CHL_GuiCenterWindow(hDlg);
 
             hProcIDList = GetDlgItem(hDlg, IDC_LIST_PROCIDS);
 
@@ -356,7 +356,7 @@ BOOL CALLBACK fGetProcIdDP(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam
 		{
             if(paProcIDs)
             {
-                vChlMmFree((void**)&paProcIDs);
+                CHL_MmFree((void**)&paProcIDs);
             }
 
 			EndDialog(hDlg, 0);
@@ -385,7 +385,7 @@ static BOOL fDisplayActiveProcesses(HWND hProcIDList, DWORD **paProcIDs, DWORD *
 
     BOOL fErrorInDisplaying = FALSE;
 
-    if(!fChlMmAlloc((void**)paProcIDs, 1024*sizeof(DWORD), NULL))
+    if(FAILED(CHL_MmAlloc((void**)paProcIDs, 1024*sizeof(DWORD), NULL)))
     {
         logerror(pstLogger, L"fDisplayActiveProcesses(): mem alloc failed");
         return FALSE;
@@ -408,7 +408,7 @@ static BOOL fDisplayActiveProcesses(HWND hProcIDList, DWORD **paProcIDs, DWORD *
     *pnProcIDs = dwBytesReturned/sizeof(DWORD);
     for(DWORD index = 0; index < dwBytesReturned/sizeof(DWORD); ++index)
     {
-        if(!fChlPsGetProcNameFromID((*paProcIDs)[index], wsProcName, _countof(wsProcName)))
+        if(!CHL_PsGetProcNameFromID((*paProcIDs)[index], wsProcName, _countof(wsProcName)))
         {
             dbgwprintf(L"Error reading proc name for %d %d\n", (*paProcIDs)[index], GetLastError());
             logwarn(pstLogger, L"Error reading proc name for %d %d", (*paProcIDs)[index], GetLastError());
@@ -495,7 +495,7 @@ BOOL CALLBACK fGetNewProgramDP(HWND hDlg, UINT message, WPARAM wParam, LPARAM lP
             pstSessionInfo = (PDBG_SESSIONSTART)lParam;
             ZeroMemory(pstSessionInfo, sizeof(DBG_SESSIONSTART));
 
-			fChlGuiCenterWindow(hDlg);
+			CHL_GuiCenterWindow(hDlg);
 
             return TRUE;
         }
@@ -616,12 +616,12 @@ BOOL fGuiUpdateThreadsList(HWND hThreadListView, PLV_THREADINFO pstLvThreadInfo,
     WCHAR **ppszStrings;
 
     // Allocate memory to hold WCHAR pointers to the 5 items to display
-    if(!fChlMmAlloc((void**)&ppszStrings, sizeof(WCHAR*) * LV_THREAD_NUMCOLUMNS, NULL))
+    if(FAILED(CHL_MmAlloc((void**)&ppszStrings, sizeof(WCHAR*) * LV_THREAD_NUMCOLUMNS, NULL)))
     {
         return FALSE;
     }
 
-    ASSERT(LV_THREAD_NUMCOLUMNS == 5);
+    static_assert(LV_THREAD_NUMCOLUMNS == 5, "Expected number of list view columns");
 
     ppszStrings[0] = szThreadId;
     ppszStrings[1] = szEipLocation;
@@ -645,14 +645,14 @@ BOOL fGuiUpdateThreadsList(HWND hThreadListView, PLV_THREADINFO pstLvThreadInfo,
         swprintf_s(szPriority, _countof(szPriority), L"%d", pstLvThreadInfo[index].iThreadPri);
 
         // Insert into list view
-        if(!fChlGuiAddListViewRow(hThreadListView, ppszStrings, LV_THREAD_NUMCOLUMNS))
+        if(!CHL_GuiAddListViewRow(hThreadListView, ppszStrings, LV_THREAD_NUMCOLUMNS, NULL))
         {
-            logerror(pstLogger, L"%s(): fChlGuiAddListViewRow failed %u", __FUNCTIONW__, GetLastError());
+            logerror(pstLogger, L"%s(): CHL_GuiAddListViewRow failed %u", __FUNCTIONW__, GetLastError());
             return FALSE;
         }
     }
 
-    vChlMmFree((void**)&ppszStrings);
+    CHL_MmFree((void**)&ppszStrings);
 
     return TRUE;
 }
@@ -671,12 +671,12 @@ BOOL fGuiUpdateRegistersList(HWND hRegsListView, WCHAR *apszNames[], DWORD *padw
     WCHAR szValue[SLEN_DWORDSTR_HEX];
 
     // Allocate memory to hold WCHAR pointers to the items to display
-    if(!fChlMmAlloc((void**)&ppszStrings, sizeof(WCHAR*) * LV_REGS_NUMCOLUMNS, NULL))
+    if(FAILED(CHL_MmAlloc((void**)&ppszStrings, sizeof(WCHAR*) * LV_REGS_NUMCOLUMNS, NULL)))
     {
         return FALSE;
     }
 
-    ASSERT(LV_REGS_NUMCOLUMNS == 2);
+	static_assert(LV_REGS_NUMCOLUMNS == 2, "Expected number of list view columns");
 
     ppszStrings[0] = szName;
     ppszStrings[1] = szValue;
@@ -690,14 +690,14 @@ BOOL fGuiUpdateRegistersList(HWND hRegsListView, WCHAR *apszNames[], DWORD *padw
         swprintf_s(szValue, _countof(szValue), L"0x%08x", padwValues[index]);
 
         // Insert into list view
-        if(!fChlGuiAddListViewRow(hRegsListView, ppszStrings, LV_REGS_NUMCOLUMNS))
+        if(!CHL_GuiAddListViewRow(hRegsListView, ppszStrings, LV_REGS_NUMCOLUMNS, NULL))
         {
-            logerror(pstLogger, L"%s(): fChlGuiAddListViewRow failed %u", __FUNCTIONW__, GetLastError());
+            logerror(pstLogger, L"%s(): CHL_GuiAddListViewRow failed %u", __FUNCTIONW__, GetLastError());
             return FALSE;
         }
     }
 
-    vChlMmFree((void**)&ppszStrings);
+    CHL_MmFree((void**)&ppszStrings);
 
     return TRUE;
 }
