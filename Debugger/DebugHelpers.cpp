@@ -86,7 +86,7 @@ BOOL fAddThread(CHL_HTABLE *phtThreads, DWORD dwThreadId, LPCREATE_THREAD_DEBUG_
         return FALSE;
 
     memcpy(pThreadDbgInfo, lpThreadInfo, sizeof(CREATE_THREAD_DEBUG_INFO));
-    return SUCCEEDED(CHL_DsInsertHT(phtThreads, &dwThreadId, sizeof(DWORD), pThreadDbgInfo, sizeof(LPCREATE_THREAD_DEBUG_INFO)));
+    return SUCCEEDED(CHL_DsInsertHT(phtThreads, (PCVOID)dwThreadId, sizeof(DWORD), pThreadDbgInfo, sizeof(LPCREATE_THREAD_DEBUG_INFO)));
 }
 
 BOOL fRemoveThread(CHL_HTABLE *phtThreads, DWORD dwThreadId, __out LPCREATE_THREAD_DEBUG_INFO lpThreadInfo)
@@ -106,7 +106,7 @@ BOOL fGetThreadHandle(CHL_HTABLE *phtThreads, DWORD dwThreadId, __out HANDLE *ph
     LPCREATE_THREAD_DEBUG_INFO pThreadDbgInfo = NULL;
     int outValSize = 0;
 
-    if(FAILED(CHL_DsFindHT(phtThreads, &dwThreadId, sizeof(DWORD), &pThreadDbgInfo, &outValSize, TRUE)))
+    if(FAILED(CHL_DsFindHT(phtThreads, (PCVOID)dwThreadId, sizeof(DWORD), &pThreadDbgInfo, &outValSize, TRUE)))
         return FALSE;
 
     ASSERT(outValSize == sizeof(LPCREATE_THREAD_DEBUG_INFO));
@@ -595,8 +595,8 @@ BOOL fUpdateThreadsListView(HWND hList, CHL_HTABLE *phtThreads, HANDLE hMainThre
         stContext.ContextFlags = CONTEXT_CONTROL;
         if(!GetThreadContext(pThreadDbgInfo->hThread, &stContext))
         {
-            dbgwprintf(L"%s(): GetThreadPriority() failed for id = %u, handle = 0x%08x", __FUNCTIONW__, dwThreadID, pThreadDbgInfo->hThread);
-            logwarn(pstLogger, L"%s(): GetThreadContext() failed for id = %u, handle = 0x%08x", __FUNCTIONW__, dwThreadID, pThreadDbgInfo->hThread);
+            dbgwprintf(L"%s(): GetThreadPriority() failed for id = %u, handle = 0x%p", __FUNCTIONW__, dwThreadID, pThreadDbgInfo->hThread);
+            logwarn(pstLogger, L"%s(): GetThreadContext() failed for id = %u, handle = 0x%p", __FUNCTIONW__, dwThreadID, pThreadDbgInfo->hThread);
             pstThreadInfo[nThreads].dwEIPLocation = 0;
 
             fRetVal = FALSE;
@@ -613,8 +613,8 @@ BOOL fUpdateThreadsListView(HWND hList, CHL_HTABLE *phtThreads, HANDLE hMainThre
         pstThreadInfo[nThreads].iThreadPri = GetThreadPriority(pThreadDbgInfo->hThread);
         if(pstThreadInfo[nThreads].iThreadPri == THREAD_PRIORITY_ERROR_RETURN)
         {
-            dbgwprintf(L"%s(): GetThreadPriority() failed for id = %u, handle = 0x%08x", __FUNCTIONW__, dwThreadID, pThreadDbgInfo->hThread);
-            logwarn(pstLogger, L"%s(): GetThreadPriority() failed for id = %u, handle = 0x%08x", __FUNCTIONW__, dwThreadID, pThreadDbgInfo->hThread);
+            dbgwprintf(L"%s(): GetThreadPriority() failed for id = %u, handle = 0x%p", __FUNCTIONW__, dwThreadID, pThreadDbgInfo->hThread);
+            logwarn(pstLogger, L"%s(): GetThreadPriority() failed for id = %u, handle = 0x%p", __FUNCTIONW__, dwThreadID, pThreadDbgInfo->hThread);
 
             fRetVal = FALSE;
         }

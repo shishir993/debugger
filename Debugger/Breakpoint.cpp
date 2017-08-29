@@ -26,7 +26,7 @@ BOOL fBpInitialize(__out PBPLIST *ppstBpList)
 
     // pstBpList->aiIdentifiers[] will be zero filled
 
-    if(!CHL_DsCreateLL(&pstBpList->pstLinkedListBp, CHL_VT_POINTER, MAX_BREAKPOINTS))
+    if(FAILED(CHL_DsCreateLL(&pstBpList->pstLinkedListBp, CHL_VT_POINTER, MAX_BREAKPOINTS)))
     {
         logerror(pstLogger, L"%s(): CHL_DsCreateLL() failed %u", __FUNCTIONW__, GetLastError());
         CHL_MmFree((void**)&pstBpList);
@@ -91,7 +91,7 @@ BOOL fBpInsert(PBPLIST pstBpList, PBPINFO pstBpInfo, PTARGETINFO pstTargetInfo, 
     stBreakpoint.stActualBp.fResolved = TRUE;
 
     // Insert into list of breakpoints
-    if(!CHL_DsInsertLL(pstBpList->pstLinkedListBp, &stBreakpoint, sizeof(stBreakpoint)))
+    if(FAILED(CHL_DsInsertLL(pstBpList->pstLinkedListBp, &stBreakpoint, sizeof(stBreakpoint))))
     {
         logerror(pstLogger, L"%s(): CHL_DsInsertLL() failed %u", __FUNCTIONW__, GetLastError());
 
@@ -180,7 +180,7 @@ BOOL fBpFind(PBPLIST pstBpList, __inout PBPINFO pstBpInfo, PINT piBpID)
 
     // Find in linked list
 	int cbOut = sizeof(pstBpFound);
-    if(!CHL_DsFindLL(pstBpList->pstLinkedListBp, &stBpToFind, fBpCompare, (void**)&pstBpFound, &cbOut, TRUE))
+    if(FAILED(CHL_DsFindLL(pstBpList->pstLinkedListBp, &stBpToFind, fBpCompare, (void**)&pstBpFound, &cbOut, TRUE)))
     {
         logerror(pstLogger, L"%s(): CHL_DsFindLL() failed %u", __FUNCTIONW__, GetLastError());
         return FALSE;

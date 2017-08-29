@@ -195,6 +195,7 @@ static BOOL fDebugNewProgram(PTARGETINFO pstTargetInfo)
         goto error_return;
     }
 
+	// TODO: Change keytype to handle both 32bit and 64bit addresses in future
     if(FAILED(CHL_DsCreateHT(&pstTargetInfo->phtDllsLoaded, 500, CHL_KT_UINT32, CHL_VT_WSTRING, TRUE)))
     {
         logerror(pstLogger, L"CHL_DsCreateHT() failed");
@@ -714,7 +715,7 @@ static BOOL fProcessDebugEventLoop(PTARGETINFO pstTargetInfo)
                         else
                         {
                             // for now, show that we have hit a breakpoint and return
-                            dbgwprintf(L"Entering debugging mode due to exception(0x%08x) at 0x%08x\n", de.u.Exception.ExceptionRecord.ExceptionCode, de.u.Exception.ExceptionRecord.ExceptionAddress);
+                            dbgwprintf(L"Entering debugging mode due to exception(0x%08x) at 0x%p\n", de.u.Exception.ExceptionRecord.ExceptionCode, de.u.Exception.ExceptionRecord.ExceptionAddress);
                         }
                     }
                 
@@ -802,7 +803,7 @@ BOOL fOnException(PTARGETINFO pstTargetInfo, __out DWORD *pdwContinueStatus)
 
 
     wprintf(
-        L"Exception 0x%08X at 0x%08x\n", 
+        L"Exception 0x%08X at 0x%p\n", 
         lpDebugEvent->u.Exception.ExceptionRecord.ExceptionCode, 
         lpDebugEvent->u.Exception.ExceptionRecord.ExceptionAddress);
 
@@ -818,7 +819,7 @@ BOOL fOnException(PTARGETINFO pstTargetInfo, __out DWORD *pdwContinueStatus)
             swprintf_s(
                 wsExceptionMessage, 
                 _countof(wsExceptionMessage), 
-                L"%s Exception(FirstChance) at: 0x%08x", 
+                L"%s Exception(FirstChance) at: 0x%p", 
                 wsExString, 
                 lpDebugEvent->u.Exception.ExceptionRecord.ExceptionAddress);
         }
@@ -827,7 +828,7 @@ BOOL fOnException(PTARGETINFO pstTargetInfo, __out DWORD *pdwContinueStatus)
             swprintf_s(
                 wsExceptionMessage, 
                 _countof(wsExceptionMessage), 
-                L"%s Exception at: 0x%08x", 
+                L"%s Exception at: 0x%p", 
                 wsExString, 
                 lpDebugEvent->u.Exception.ExceptionRecord.ExceptionAddress);
         }
@@ -966,7 +967,7 @@ BOOL fOnCreateProcess(PTARGETINFO pstTargetInfo)
         logerror(pstLogger, L"Insufficient buffer size for GetFinalPathNameByHandle()");
     else
     {
-        wprintf(L"Process create: [%u] : %s\nBaseAddr: 0x%08x\nStartAddr: 0x%08x\nThreadLocal: 0x%08x\n", 
+        wprintf(L"Process create: [%u] : %s\nBaseAddr: 0x%p\nStartAddr: 0x%p\nThreadLocal: 0x%p\n", 
             lpDebugEvent->dwProcessId, 
             wsImageName, 
             lpDebugEvent->u.CreateProcessInfo.lpBaseOfImage,
@@ -994,24 +995,24 @@ BOOL fOnCreateProcess(PTARGETINFO pstTargetInfo)
         memcpy(&(pstTargetInfo->stProcessInfo), &(lpDebugEvent->u.CreateProcessInfo), sizeof(CREATE_PROCESS_DEBUG_INFO));
 
         // Get some additional info about target process's image
-        if(!CHL_GnCreateMemMapOfFile(lpDebugEvent->u.CreateProcessInfo.hFile, 0, &pstTargetInfo->hFileMapObj, &pstTargetInfo->hFileMapView))
+        if(FAILED(CHL_GnCreateMemMapOfFile(lpDebugEvent->u.CreateProcessInfo.hFile, 0, &pstTargetInfo->hFileMapObj, &pstTargetInfo->hFileMapView)))
         {
             logerror(pstLogger, L"%s(): CHL_GnCreateMemMapOfFile() failed %u", __FUNCTIONW__, GetLastError());
             goto error_return;
         }
 
-        if(!CHL_PsGetNtHeaders(pstTargetInfo->hFileMapView, &pstTargetInfo->pstNtHeaders))
+        if(FAILED(CHL_PsGetNtHeaders(pstTargetInfo->hFileMapView, &pstTargetInfo->pstNtHeaders)))
         {
             logerror(pstLogger, L"%s(): CHL_PsGetNtHeaders() failed %u", __FUNCTIONW__, GetLastError());
             goto error_return;
         }
 
-        if(!CHL_PsGetPtrToCode(
+        if(FAILED(CHL_PsGetPtrToCode(
                 (DWORD)pstTargetInfo->hFileMapView, 
                 pstTargetInfo->pstNtHeaders, 
                 &pstTargetInfo->dwCodeStart, 
                 &pstTargetInfo->dwCodeSize, 
-                &pstTargetInfo->dwCodeSecVirtAddr))
+                &pstTargetInfo->dwCodeSecVirtAddr)))
         {
             logerror(pstLogger, L"%s(): CHL_PsGetPtrToCode() failed %u", __FUNCTIONW__, GetLastError());
             goto error_return;
@@ -1030,7 +1031,7 @@ BOOL fOnCreateProcess(PTARGETINFO pstTargetInfo)
                 // TODO: show message to user
                 logerror(
                     pstLogger, 
-                    L"%s(): fBpInsert() failed %u. Could not place BP at 0x%08x.", 
+                    L"%s(): fBpInsert() failed %u. Could not place BP at 0x%p.", 
                     __FUNCTIONW__, 
                     GetLastError(), 
                     (DWORD)pstTargetInfo->stProcessInfo.lpStartAddress);
@@ -1122,14 +1123,14 @@ BOOL fOnLoadDll(PTARGETINFO pstTargetInfo)
         logerror(pstLogger, L"Insufficient buffer size for GetFinalPathNameByHandle()");
     else
     {
-        wprintf(L"DLL Load: [0x%08x] : %s\n", lpDebugEvent->u.LoadDll.lpBaseOfDll, wsImageName);
+        wprintf(L"DLL Load: [0x%p] : %s\n", lpDebugEvent->u.LoadDll.lpBaseOfDll, wsImageName);
     }
 
     // Insert into the DLLs loaded hashtable
-    if(FAILED(CHL_DsInsertHT(pstTargetInfo->phtDllsLoaded, &(lpDebugEvent->u.LoadDll.lpBaseOfDll), sizeof(DWORD), wsImageName, 
+    if(FAILED(CHL_DsInsertHT(pstTargetInfo->phtDllsLoaded, lpDebugEvent->u.LoadDll.lpBaseOfDll, sizeof(DWORD), wsImageName, 
         CONV_BYTES_wcsnlen_s(wsImageName, SLEN_MAXPATH))))
     {
-        logerror(pstLogger, L"Unable to insert 0x%08x:%s into hash", *((DWORD*)lpDebugEvent->u.LoadDll.lpBaseOfDll), wsImageName);
+        logerror(pstLogger, L"Unable to insert 0x%p:%s into hash", *((DWORD*)lpDebugEvent->u.LoadDll.lpBaseOfDll), wsImageName);
     }
 
     ++(pstTargetInfo->nCurDllsLoaded);
@@ -1150,14 +1151,14 @@ BOOL fOnUnloadDll(PTARGETINFO pstTargetInfo)
     WCHAR *pws = NULL;
     int outValSize = sizeof(pws);
 
-    if(FAILED(CHL_DsFindHT(pstTargetInfo->phtDllsLoaded, &(lpDebugEvent->u.UnloadDll.lpBaseOfDll), sizeof(DWORD), &pws, &outValSize, TRUE)))
+    if(FAILED(CHL_DsFindHT(pstTargetInfo->phtDllsLoaded, lpDebugEvent->u.UnloadDll.lpBaseOfDll, sizeof(DWORD), &pws, &outValSize, TRUE)))
     {
-        wprintf(L"DLL Unload : [0x%08x] : Image name not found\n", (DWORD)(lpDebugEvent->u.UnloadDll.lpBaseOfDll));
+        wprintf(L"DLL Unload : [0x%p] : Image name not found\n", lpDebugEvent->u.UnloadDll.lpBaseOfDll);
     }
     else
     {
-        wprintf(L"DLL Unload : [0x%08x] : %s\n", (DWORD)lpDebugEvent->u.UnloadDll.lpBaseOfDll, pws);
-        CHL_DsRemoveHT(pstTargetInfo->phtDllsLoaded, &(lpDebugEvent->u.UnloadDll.lpBaseOfDll), sizeof(DWORD));
+        wprintf(L"DLL Unload : [0x%p] : %s\n", lpDebugEvent->u.UnloadDll.lpBaseOfDll, pws);
+        CHL_DsRemoveHT(pstTargetInfo->phtDllsLoaded, lpDebugEvent->u.UnloadDll.lpBaseOfDll, sizeof(DWORD));
     }
 
     --(pstTargetInfo->nCurDllsLoaded);
