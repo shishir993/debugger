@@ -41,7 +41,7 @@ BINFILEINFO g_binFileInfo;
 //	#ifdef NDEBUG
 //	// Opening statement
 //	wprintf(L"Shishir's Garage project::DASM v%s, a disassembler for 32bit PE files\
-//				\nCoder: Shishir K Prasad {shishir993@yahoo.com}\
+//				\nCoder: Shishir Bhat {shishirb.asm@gmail.com}\
 //				\nCopyright: None but don't forget to include my name as a reference in your code/webpage. :)\n\n", DASM_VERSION_STR);
 //	#endif
 //
