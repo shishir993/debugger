@@ -258,15 +258,14 @@ BOOL fHandleExceptionBreakpoint(PTARGETINFO pstTargetInfo, __out PDWORD pdwConti
     if(!fBpFind(pstTargetInfo->pListBreakpoint, &stBpInfo, 0))
     {
         logwarn(pstLogger, L"%s(): fBpFind() failed %u", __FUNCTIONW__, GetLastError());
-        
+		
+		// Save the thread id and target address so that we can show disassembly
+		pstTargetInfo->stPrevBpInfo.dwThreadId = pstTargetInfo->lpDebugEvent->dwThreadId;
+		pstTargetInfo->stPrevBpInfo.stBpInfo.dwTargetAddr = (DWORD)pstTargetInfo->lpDebugEvent->u.Exception.ExceptionRecord.ExceptionAddress;
+
         if(pstTargetInfo->iDebugState == DSTATE_WAITFOR_DBGBREAK)
         {
             // We have received the breakpoint exception after calling DebugBreakProcess
-
-            // Save the thread id and target address so that we can show disassembly
-            pstTargetInfo->stPrevBpInfo.dwThreadId = pstTargetInfo->lpDebugEvent->dwThreadId;
-            pstTargetInfo->stPrevBpInfo.stBpInfo.dwTargetAddr = (DWORD)pstTargetInfo->lpDebugEvent->u.Exception.ExceptionRecord.ExceptionAddress;
-
             // Debugger state change is handled in Debug.cpp:fOnException()
 
             *pdwContinueStatus = DBG_CONTCUSTOM_BREAK;
